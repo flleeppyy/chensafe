@@ -391,38 +391,32 @@ module.exports = {
       and how to set default retention for each groups.
     */
     retentionPeriods: {
-      // Defaults that also apply to non-registered users
       _: [
-        24, // 24 hours (1 day) -- first value is the group's default retention
+      ],
+      /*
+      Inheritance is based on each group's 'values' in permissionController.js.
+      Basically groups with higher 'value' will inherit retention periods
+      of any groups with lower 'values'.
+      You may remove all the groups below to apply the defaults above for everyone.
+      */
+     user: [
+        0,
+        24, // 24 hours (1 day) 
         1 / 60 * 15, // 15 minutes
         1 / 60 * 30, // 30 minutes
         1, // 1 hour
         6, // 6 hours
-        12 // 12 hours
-      ],
-      /*
-        Inheritance is based on each group's 'values' in permissionController.js.
-        Basically groups with higher 'value' will inherit retention periods
-        of any groups with lower 'values'.
-        You may remove all the groups below to apply the defaults above for everyone.
-      */
-      user: [
+        12, // 12 hours
         24 * 7, // 168 hours (7 days) -- group's default
         24 * 2, // 48 hours (2 days)
         24 * 3, // 72 hours (3 days)
         24 * 4, // 96 hours (4 days)
         24 * 5, // 120 hours (5 days)
-        24 * 6 // 144 hours (6 days)
-      ],
-      vip: [
-        24 * 30, // 720 hours (30 days) -- group's default
+        24 * 6, // 144 hours (6 days)
+        24 * 30, // 720 hours (30 days)
         24 * 14, // 336 hours (14 days)
         24 * 21, // 504 hours (21 days)
-        24 * 91 // 2184 hours (91 days)
-      ],
-      vvip: [
-        null, // -- if null, use previous group's default as this group's default
-        0, // permanent
+        24 * 91, // 2184 hours (91 days)
         24 * 183 // 4392 hours (183 days)
       ],
       moderator: [
