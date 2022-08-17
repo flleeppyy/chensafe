@@ -1,21 +1,21 @@
 {
-  "name": "lolisafe",
+  "name": "chensafe",
   "version": "3.0.0",
   "description": "Blazing fast file uploader and awesome bunker written in node! 🚀",
   "repository": {
     "type": "git",
-    "url": "https://github.com/BobbyWibowo/lolisafe"
+    "url": "https://github.com/flleeppyy/chensafe"
   },
   "bugs": {
-    "url": "https://github.com/BobbyWibowo/lolisafe/issues"
+    "url": "https://github.com/flleeppyy/chensafe/issues"
   },
   "engines": {
     "node": ">=14.0.0"
   },
   "license": "MIT",
   "scripts": {
-    "start": "node ./lolisafe.js",
-    "pm2": "pm2 start ./lolisafe.js",
+    "start": "node ./chensafe.js",
+    "pm2": "pm2 start ./chensafe.js",
     "lint": "gulp lint",
     "build": "gulp default",
     "watch": "gulp watch",

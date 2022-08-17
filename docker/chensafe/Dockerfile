@@ -2,7 +2,7 @@ FROM jrottenberg/ffmpeg:5-alpine as ffmpeg
 
 FROM node:16-alpine
 
-WORKDIR /usr/lolisafe
+WORKDIR /usr/chensafe
 COPY package.json yarn.lock ./
 
 RUN apk add --update \

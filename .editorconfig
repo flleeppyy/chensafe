@@ -17,7 +17,7 @@ indent_size = 4
 [LICENSE]
 insert_final_newline = false
 
-[./public/safe.fiery.me.sxcu]
+[./public/safe.fleepy.tv.sxcu]
 insert_final_newline = false
 
 [./.vscode/settings.json]

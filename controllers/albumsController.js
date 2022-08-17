@@ -524,7 +524,7 @@ self.getUpstreamCompat = async (req, res) => {
 
   res._json = res.json
   res.json = (body = {}) => {
-    // Rebuild JSON payload to match lolisafe upstream
+    // Rebuild JSON payload to match upstream
     const rebuild = {}
     const maps = {
       success: null,

@@ -28,50 +28,18 @@
     <h3 class="subtitle has-text-white-ter">What is {{ globals.name }}?</h3>
     <article class="message">
       <div class="message-body">
-        This is a fork of <a href="https://github.com/WeebDev/lolisafe" target="_blank" rel="noopener">lolisafe</a>.<br>
+        This is a fork of a project with a <a href="https://github.com/WeebDev/lolisafe" target="_blank" rel="noopener">somewhat controversial name</a>.<br>
         {{ globals.fork_host }} repository of the fork is located <a href="{{ globals.fork_repo }}" target="_blank" rel="noopener">here</a>.
+        
       </div>
     </article>
 
-    {% if globals.enable_faq_banned_categories -%}
-    <h3 class="subtitle has-text-white-ter">Are there any <strong>banned categories</strong>?</h3>
-    <article class="message">
-      <div class="message-body">
-        Banned categories are the following, <i>but not limited to</i>:<br>
-        <strong>Child pornography.</strong><br>
-        Virus/malware, or anything Google Safe Search would categorize as <i>unwanted software</i> *.<br>
-        Copyrighted content. Meaning I will respond to copyright takedown notices,.. if any.<br>
-        <strong>Full-length episodes of cartoons, TV shows or movies of any kind.</strong> Japanese, Chinese, Antarcticaness, I don't care.<br>
-        CD drama audio files. I only know of Japanese shows that have these, but regardless of nationality.<br>
-        <br>
-        Any of such uploads, when found, will be purged immediately without any prior notice.<br>
-        Repeat offenders will have their IPs permanently blocked from accessing {{ globals.whole_faq }}.<br>
-        For child pornography specifically, first offenders will immediately be blocked permanently.<br>
-        <br>
-        * When Google Safe Search detects <i>unwanted software</i>, Chrome's users will be alerted that anything they download from {{ globals.whole_faq }} are <i>unsafe</i>.
-      </div>
-    </article>
-    {%- endif %}
-
+    
     {% if not globals.is_for_personal_use -%}
     <h3 class="subtitle has-text-white-ter">Will you keep my uploads forever?</h3>
     <article class="message">
       <div class="message-body">
-        Unless the uploads are included within the banned categories above, or some other bullshit, I will.<br>
-        {% if globals.takedowns_url -%}
-        In case I have to take down any uploads, I will log their names and explanations in <a href="{{ globals.takedowns_url }}" target="_blank">here</a>.<br>
-        {%- endif %}
-        <br>
-        Otherwise, we also have temporary uploads feature, with which you can have your uploads be automatically deleted after a period of time.<br>
-        It is disabled by default, but you can configure it through our homepage uploader's Config tab.
-      </div>
-    </article>
-
-    <h3 class="subtitle has-text-white-ter">How can I keep track of my uploads?</h3>
-    <article class="message">
-      <div class="message-body">
-        Simply create a user on the site and every uploads will be associated with your account, granting you access to your uploads through our Dashboard.<br>
-        You will <strong>have</strong> to do this if you ever want to delete your own uploads in the future, unless you choose to use the temporary uploads feature.
+        If its some shit that might get me in trouble, I'll probably delete it. Other than that you're fine.
       </div>
     </article>
 
@@ -88,19 +56,7 @@
     <h3 class="subtitle has-text-white-ter">Why should I use this?</h3>
     <article class="message">
       <div class="message-body">
-        I don't know.
-      </div>
-    </article>
-    {%- endif %}
-
-    {% if globals.email -%}
-    <h3 class="subtitle has-text-white-ter">I saw something too illegal for my tastes here, what should I do?</h3>
-    <article class="message">
-      <div class="message-body">
-        Send a strongly worded email to <a href="mailto:{{ globals.email }}">{{ globals.email }}</a> and I will try to get back to you within <strong>48 hours</strong>.<br>
-        {% if globals.enable_faq_banned_categories -%}
-        These include copyright takedown notices and reports about uploads violating banned categories.
-        {%- endif %}
+        Because you might be looking for a file host. Other than that I don't know.
       </div>
     </article>
     {%- endif %}
@@ -140,7 +96,7 @@
     </article>
 
     {% if not globals.is_for_personal_use -%}
-    {# lolisafe does not do this by default, enable only if you specifically do so #}
+    {# chensafe does not do this by default, enable only if you specifically do so #}
     <h3 class="subtitle has-text-white-ter">Why are my <strong>.htm/.html</strong> uploads being served as plain text?</h3>
     <article class="message">
       <div class="message-body">
@@ -172,25 +128,15 @@
     </article>
     {%- endif %}
 
-    {% if globals.enable_faq_tor -%}
-    <h3 class="subtitle has-text-white-ter">I cannot access this website with Tor and/or VPNs!?</h3>
-    <article class="message">
-      <div class="message-body">
-        My server is actively refreshing and blacklisting Tor exit nodes.<br>
-        There have been too many child pornography uploaders using Tor, that they simply didn't care about individual IPs being banned.<br>
-        Sometimes I might also end up blacklisting IP ranges that were known to come from VPNs, if there had been attempts with multiple of those IPs.<br>
-        Nothing much I can do about it. We live in a society.
-      </div>
-    </article>
-    {%- endif %}
-
     <h3 class="subtitle has-text-white-ter">Are there any Desktop clients?</h3>
     <article class="message">
       <div class="message-body">
-        We do have some browser extensions to assist uploads:<br>
-        <a href="https://addons.mozilla.org/en-US/firefox/addon/lolisafe/" target="_blank" rel="noopener">Firefox extension</a>. Maintained by me. Its GitHub repository is located <a href="https://github.com/BobbyWibowo/loli-safe-extension" target="_blank" rel="noopener">here</a>.<br>
-        <a href="https://chrome.google.com/webstore/detail/loli-safe-uploader/enkkmplljfjppcdaancckgilmgoiofnj" target="_blank" rel="noopener">Chrome extension</a>. Maintained by lolisafe's team. Its GitHub repository is located <a href="https://github.com/WeebDev/loli-safe-extension" target="_blank" rel="noopener">here</a>.<br>
-        With the Chrome extension specifically, you will have to manually set the domain in the extension's settings to <code>https://safe.fiery.me</code>.<br>
+        Please disregard the names of some of the extensions, this is the only easiest file host solution I can use.
+        <br>
+        There are some some browser extensions to assist uploads:<br>
+        <a href="https://addons.mozilla.org/en-US/firefox/addon/lolisafe/" target="_blank" rel="noopener">Firefox extension</a>. Its GitHub repository is located <a href="https://github.com/BobbyWibowo/loli-safe-extension" target="_blank" rel="noopener">here</a>.<br>
+        <a href="https://chrome.google.com/webstore/detail/loli-safe-uploader/enkkmplljfjppcdaancckgilmgoiofnj" target="_blank" rel="noopener">Chrome extension</a>. Its GitHub repository is located <a href="https://github.com/WeebDev/loli-safe-extension" target="_blank" rel="noopener">here</a>.<br>
+        With the Chrome extension specifically, you will have to manually set the domain in the extension's settings to <code>https://safe.fleepy.tv</code>.<br>
         <br>
         If you use Windows desktop, the safe support uploads from <a href="https://github.com/ShareX/ShareX" target="_blank" rel="noopener">ShareX</a>.<br>
         You can download the config file by clicking on the ShareX icon on the homepage.<br>
@@ -284,7 +230,6 @@
       <div class="message-body">
         <strong>Security purposes.</strong><br>
         For instance, if it is necessary to purge uploads from a specific IP address due to abuse, it <i>will</i> help a lot to be able to find all uploads by that specific uploader.<br>
-        My safe have been plagued by aplenty of abuse, so this policy will remain as long as the safe lives on.
       </div>
     </article>
     {%- endif %}

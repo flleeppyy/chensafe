@@ -1115,7 +1115,7 @@ self.sendUploadResponse = async (req, res, result) => {
 
 self.delete = async (req, res) => {
   // Re-map Request.body for .bulkDelete()
-  // This is the legacy API used by lolisafe v3's frontend
+  // This is the legacy API used by chensafe v3's frontend
   // Meanwhile this fork's frontend uses .bulkDelete() straight away
   const id = parseInt(req.body.id)
   req.body = {

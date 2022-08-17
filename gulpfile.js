@@ -186,7 +186,7 @@ gulp.task('watch:src', gulp.parallel('watch:css', 'watch:scss', 'watch:fontello'
 
 gulp.task('nodemon', cb => {
   return nodemon({
-    script: './lolisafe.js',
+    script: './chensafe.js',
     env: process.env,
     watch: [
       'controllers/',
@@ -196,7 +196,7 @@ gulp.task('nodemon', cb => {
       'views/album.njk',
       'config.js',
       'logger.js',
-      'lolisafe.js'
+      'chensafe.js'
     ],
     ext: 'js',
     done: cb

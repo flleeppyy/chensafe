@@ -1,8 +1,8 @@
-# lolisafe, a small safe worth protecting
+# chensafe, a small safe worth protecting
 
-[![safe.fiery.me](https://i.fiery.me/upN1Q.png)](https://safe.fiery.me)
+[![safe.fleepy.tv](https://i.fiery.me/upN1Q.png)](safe.fleepy.tv)
 
-[![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](https://raw.githubusercontent.com/WeebDev/lolisafe/master/LICENSE)
+[![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](https://raw.githubusercontent.com/flleeppyy/chensafe/master/LICENSE)
 
 [![JavaScript Style Guide](https://cdn.rawgit.com/standard/standard/master/badge.svg)](https://github.com/standard/standard)
 
@@ -29,19 +29,11 @@
 * Token-based authentication on all APIs, allowing you to easily integrate the service with anything.
 * ... and more!
 
-## Differences with Upstream/Chibisafe
+## Differences with Upstream
 
-This fork is the one being used at [https://safe.fiery.me](https://safe.fiery.me).
-
-It was originally based on [WeebDev/lolisafe](https://github.com/WeebDev/lolisafe) v3, but later have been so heavily rewritten that it is now simply its own thing.
-
-Chibisafe is an upstream rewrite & rebrand, and technically is lolisafe v4.
-
-If you want to use an existing lolisafe v3 database with this fork, copy over `database/db` file from your previous installation, then run `yarn migrate` at least once to create the new database columns introduced in this fork (don't forget to make a backup).
-
-> **Said migration script is NOT COMPATIBLE with Chibisafe's database.**
-
-Configuration file of lolisafe v3 (`config.js`) is also NOT fully compatible with this fork. There are some options that had been renamed and/or restructured. Please make sure your config matches the sample in `config.sample.js` before starting and/or migrating your previous database.
+The main difference is the name and logos used in this fork.
+The original name of this serivce has some controversy because of the first word, and couldn't find any other self-hosted open source services,
+that did what I wanted, so I had to use this. 
 
 ## Running in production mode
 
@@ -60,9 +52,7 @@ You can also start it with `yarn pm2` if you have [PM2](https://pm2.keymetrics.i
 
 When running in production mode, the safe will use pre-built client-side CSS/JS files from `dist` directory, while the actual source codes are in `src` directory.
 
-The pre-built files are processed with [postcss-preset-env](https://github.com/csstools/postcss-preset-env), [cssnano](https://github.com/cssnano/cssnano), [bublé](https://github.com/bublejs/buble), and [terser](https://github.com/terser/terser), and done automatically with [GitHub Actions](https://github.com/BobbyWibowo/lolisafe/blob/safe.fiery.me/.github/workflows/build.yml).
-
-> If you want to use this on Docker, please check out [docker directory](https://github.com/BobbyWibowo/lolisafe/tree/safe.fiery.me/docker).
+The pre-built files are processed with [postcss-preset-env](https://github.com/csstools/postcss-preset-env), [cssnano](https://github.com/cssnano/cssnano), [bublé](https://github.com/bublejs/buble), and [terser](https://github.com/terser/terser), and done automatically with [GitHub Actions](https://github.com/flleeppyy/chensafe/blob/safe.fiery.me/.github/workflows/build.yml).
 
 ## Running in development mode
 

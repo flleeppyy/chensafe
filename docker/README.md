@@ -9,17 +9,17 @@ First make sure you have docker and docker composer installed, so please follow 
 After that:
 - Navigate to this directory (`docker`).
 - Copy the config file called `docker-compose.config.example.yml` and name it `docker-compose.config.yml` with the values you want. Those that are left commented will use the default values.
-- Navigate to `nginx` directory, then copy either `lolisafe.tld.http.example.conf` or `lolisafe.tld.https.example.conf` and name it `lolisafe.tld.conf` for either HTTP or HTTPS.  
+- Navigate to `nginx` directory, then copy either `chensafe.tld.http.example.conf` or `chensafe.tld.https.example.conf` and name it `chensafe.tld.conf` for either HTTP or HTTPS.  
   If using HTTPS make sure to put your certificates into the `ssl` folder and name them accordingly:
-  - `lolisafe.tld.crt` for the certificate
-  - `lolisafe.tld.key` for the certificate key
+  - `chensafe.tld.crt` for the certificate
+  - `chensafe.tld.key` for the certificate key
 
 Once you are done run the following commands:
 
-- `./lolisafe.sh prod pull`
-- `./lolisafe.sh prod build`
-- `./lolisafe.sh prod up -d`
+- `./chensafe.sh prod pull`
+- `./chensafe.sh prod build`
+- `./chensafe.sh prod up -d`
 
-If you are on a Windows host, replace `./lolisafe.sh` with `./lolisafe.ps1`.
+If you are on a Windows host, replace `./chensafe.sh` with `./chensafe.ps1`.
 
-Congrats, your lolisafe instance is now running.
+Congrats, your chensafe instance is now running.

@@ -3,17 +3,17 @@ version: "3.7"
 services:
     nginx:
         volumes:
-            - lolisafe-data:/usr/lolisafe/uploads
+            - chensafe-data:/usr/chensafe/uploads
 
-    lolisafe:
+    chensafe:
         volumes:
-            - lolisafe-data:/usr/lolisafe/uploads
-            - lolisafe-database:/usr/lolisafe/database
+            - chensafe-data:/usr/chensafe/uploads
+            - chensafe-database:/usr/chensafe/database
 
 volumes:
     nginx-data:
         name: "nginx-data"
-    lolisafe-data:
-        name: "lolisafe-data"
-    lolisafe-database:
-        name: "lolisafe-database"
+    chensafe-data:
+        name: "chensafe-data"
+    chensafe-database:
+        name: "chensafe-database"
