@@ -391,8 +391,6 @@ module.exports = {
       and how to set default retention for each groups.
     */
     retentionPeriods: {
-      _: [
-      ],
       /*
       Inheritance is based on each group's 'values' in permissionController.js.
       Basically groups with higher 'value' will inherit retention periods
@@ -400,7 +398,7 @@ module.exports = {
       You may remove all the groups below to apply the defaults above for everyone.
       */
      user: [
-        0,
+        0, // Perm
         24, // 24 hours (1 day) 
         1 / 60 * 15, // 15 minutes
         1 / 60 * 30, // 30 minutes

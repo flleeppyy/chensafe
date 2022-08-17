@@ -31,9 +31,9 @@
 
 ## Differences with Upstream
 
-The main difference is the name and logos used in this fork.
-The original name of this serivce has some controversy because of the first word, and couldn't find any other self-hosted open source services,
-that did what I wanted, so I had to use this. 
+The main difference is the name and logos used in this fork. The original name of this serivce has some controversy, and couldn't find any other self-hosted open source services, that did what I wanted, so I had to use this.
+
+This is also aimed to be a personal fork, so the user ranks have been removed from the sample config, as well some stuff from the permissions controller.
 
 ## Running in production mode
 
