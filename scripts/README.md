@@ -87,4 +87,4 @@ You will also need to use this script to overwrite existing thumbnails if you wa
 
 ## bump-versions.js
 
-[\[...\]](https://github.com/BobbyWibowo/lolisafe/tree/safe.fiery.me/src#readme)
+[\[...\]](https://github.com/flleeppyy/chensafe/tree/main/src#readme)

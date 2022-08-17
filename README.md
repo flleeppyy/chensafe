@@ -52,7 +52,7 @@ You can also start it with `yarn pm2` if you have [PM2](https://pm2.keymetrics.i
 
 When running in production mode, the safe will use pre-built client-side CSS/JS files from `dist` directory, while the actual source codes are in `src` directory.
 
-The pre-built files are processed with [postcss-preset-env](https://github.com/csstools/postcss-preset-env), [cssnano](https://github.com/cssnano/cssnano), [bublé](https://github.com/bublejs/buble), and [terser](https://github.com/terser/terser), and done automatically with [GitHub Actions](https://github.com/flleeppyy/chensafe/blob/safe.fiery.me/.github/workflows/build.yml).
+The pre-built files are processed with [postcss-preset-env](https://github.com/csstools/postcss-preset-env), [cssnano](https://github.com/cssnano/cssnano), [bublé](https://github.com/bublejs/buble), and [terser](https://github.com/terser/terser), and done automatically with [GitHub Actions](https://github.com/flleeppyy/chensafe/blob/main/.github/workflows/build.yml).
 
 ## Running in development mode
 
