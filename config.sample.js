@@ -397,9 +397,9 @@ module.exports = {
       of any groups with lower 'values'.
       You may remove all the groups below to apply the defaults above for everyone.
       */
-     user: [
+      user: [
         0, // Perm
-        24, // 24 hours (1 day) 
+        24, // 24 hours (1 day)
         1 / 60 * 15, // 15 minutes
         1 / 60 * 30, // 30 minutes
         1, // 1 hour
