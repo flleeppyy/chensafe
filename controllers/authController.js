@@ -213,14 +213,27 @@ self.register = async (req, res) => {
 }
 
 self.changePassword = async (req, res) => {
-  const password = typeof req.body.password === 'string'
-    ? req.body.password.trim()
-    : ''
-  if (password.length < self.pass.min || password.length > self.pass.max) {
+  let password
+
+  if (req.body.hash) {
+    password = null
+  } else if (typeof req.body.password === 'string') {
+    password = req.body.password.trim()
+  } else {
+    password = ''
+  }
+
+  if (password && (password.length < self.pass.min || password.length > self.pass.max)) {
     throw new ClientError(`Password must have ${self.pass.min}-${self.pass.max} characters.`)
   }
 
-  const hash = await bcrypt.hash(password, saltRounds)
+  if (req.body.hash && !utils.validBcryptHash(req.body.hash)) {
+    throw new ClientError('Invalid bcrypt hash.')
+  }
+
+  const hash = password
+    ? await bcrypt.hash(password, saltRounds)
+    : req.body.hash
 
   await utils.db.table('users')
     .where('id', req.locals.user.id)
@@ -254,15 +267,23 @@ self.createUser = async (req, res) => {
     throw new ClientError('Username is reserved.')
   }
 
-  let password = typeof req.body.password === 'string'
-    ? req.body.password.trim()
-    : ''
-  if (password.length) {
-    if (password.length < self.pass.min || password.length > self.pass.max) {
-      throw new ClientError(`Password must have ${self.pass.min}-${self.pass.max} characters.`)
+  let password
+
+  // TODO: Simplify this
+  if (req.body.hash) {
+    password = null
+  } else if (typeof req.body.password === 'string') {
+    password = req.body.password.trim()
+  } else { password = '' }
+
+  if (!req.body.hash) {
+    if (password.length) {
+      if (password.length < self.pass.min || password.length > self.pass.max) {
+        throw new ClientError(`Password must have ${self.pass.min}-${self.pass.max} characters.`)
+      }
+    } else {
+      password = randomstring.generate(self.pass.rand)
     }
-  } else {
-    password = randomstring.generate(self.pass.rand)
   }
 
   let group = req.body.group
@@ -283,7 +304,13 @@ self.createUser = async (req, res) => {
     throw new ClientError('Username already exists.')
   }
 
-  const hash = await bcrypt.hash(password, saltRounds)
+  if (req.body.hash && !utils.validBcryptHash(req.body.hash)) {
+    throw new ClientError('Invalid bcrypt hash.')
+  }
+
+  const hash = req.body.hash
+    ? req.body.hash
+    : await bcrypt.hash(password, saltRounds)
 
   const token = await tokens.getUniqueToken(res)
 
@@ -298,6 +325,18 @@ self.createUser = async (req, res) => {
     })
 
   utils.invalidateStatsCache('users')
+
+  const response = {
+    success: true,
+    username,
+    group
+  }
+
+  if (!req.body.hash) {
+    Object.assign(response, {
+      password
+    })
+  }
 
   return res.json({ success: true, username, password, group })
 }

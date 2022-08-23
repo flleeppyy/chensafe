@@ -2349,6 +2349,48 @@ page.changePassword = (params = {}) => {
   })
 }
 
+page.changePasswordHash = (params = {}) => {
+  page.dom.innerHTML = `
+    <form class="prevent-default">
+      <div class="field">
+        <label class="label">Bcrypt Hash</label>
+        <div class="control">
+          <input id="hash" class="input" type="text" minlength="6" maxlength="64">
+        </div>
+      </div>
+      <div class="field">
+        <div class="control">
+          <button type="submit" id="sendChangePasswordHash" class="button is-info is-outlined is-fullwidth">
+            <span class="icon">
+              <i class="icon-paper-plane"></i>
+            </span>
+            <span>Set new password hash</span>
+          </button>
+        </div>
+      </div>
+    </form>
+  `
+  page.fadeInDom()
+  page.scrollToDom()
+  page.updateTrigger(params.trigger, 'active')
+
+  document.querySelector('#sendChangePasswordHash').addEventListener('click', event => {
+    if (page.isSomethingLoading) return page.warnSomethingLoading()
+
+    if (!page.dom.querySelector('form').checkValidity()) return
+
+    if (/^\$2[ayb]\$.{56}$/.test(document.querySelector('#hash').value)) {
+      page.sendNewPasswordHash(document.querySelector('#hash').value, event.currentTarget)
+    } else {
+      swal({
+        title: 'Invalid Bcrypt hash',
+        text: 'The bcrypt hash is not valid (According to a regex).',
+        icon: 'error'
+      })
+    }
+  })
+}
+
 page.sendNewPassword = (pass, element) => {
   page.updateTrigger(element, 'loading')
 
@@ -2366,6 +2408,35 @@ page.sendNewPassword = (pass, element) => {
     swal({
       title: 'Woohoo!',
       text: 'Your password was successfully changed.',
+      icon: 'success',
+      buttons: false,
+      timer: 1500
+    }).then(() => {
+      page.changePassword()
+    })
+  }).catch(error => {
+    page.updateTrigger(element)
+    page.onAxiosError(error)
+  })
+}
+
+page.sendNewPasswordHash = (hash, element) => {
+  page.updateTrigger(element, 'loading')
+
+  axios.post('api/password/change', { hash }).then(response => {
+    if (response.data.success === false) {
+      if (response.data.description === 'No token provided') {
+        return page.verifyToken(page.token)
+      } else {
+        page.updateTrigger(element)
+        return swal('An error occurred!', response.data.description, 'error')
+      }
+    }
+
+    page.updateTrigger(element)
+    swal({
+      title: 'Woohoo!',
+      text: 'Your password hash was successfully changed.',
       icon: 'success',
       buttons: false,
       timer: 1500
@@ -2695,7 +2766,7 @@ page.createUser = () => {
       const div = document.createElement('div')
       div.innerHTML = `
         <p>Username: <b>${response.data.username}</b></p>
-        <p>Password: <code>${response.data.password}</code></p>
+        ${response.data.username ? `<p>Password: <code>${response.data.password}</code></p>` : ''}
         <p>User group: <b>${response.data.group}</b></p>
       `
       swal({

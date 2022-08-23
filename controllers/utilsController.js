@@ -1109,4 +1109,6 @@ self.stats = async (req, res) => {
     })
 }
 
+self.validBcryptHash = string => /^\$2[ayb]\$.{56}$/.test(string);
+
 module.exports = self
