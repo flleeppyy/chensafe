@@ -28,7 +28,7 @@
     <h3 class="subtitle has-text-white-ter">What is {{ globals.name }}?</h3>
     <article class="message">
       <div class="message-body">
-        This is a fork of a project with a <a href="https://github.com/WeebDev/lolisafe" target="_blank" rel="noopener">somewhat controversial name</a>.<br>
+        This is a fork of a project with a <a href="https://github.com/BobbyWibowo/lolisafe" target="_blank" rel="noopener">somewhat controversial name</a>.<br>
         {{ globals.fork_host }} repository of the fork is located <a href="{{ globals.fork_repo }}" target="_blank" rel="noopener">here</a>.
         
       </div>
@@ -90,7 +90,7 @@
           {{ comma() }}<code>{{ extension }}</code>
           {%- endfor -%}
         {%- else -%}
-        We support any file extensions.
+        We support any file extensions. Please consider wrapping executables in archives like zip or tar. It's recommended but I'm not gonna yell at you for it.
         {%- endif %}
       </div>
     </article>
@@ -151,7 +151,7 @@
     <h3 class="subtitle has-text-white-ter">Do you have a No-JS uploader form?</h3>
     <article class="message">
       <div class="message-body">
-        <a href="nojs" target="_blank"><strong>Yes!</strong></a>
+        <a href="nojs" target="_blank"><strong>Yes, but it may not work properly.</strong></a>
       </div>
     </article>
 
@@ -194,7 +194,7 @@
     <h3 class="subtitle has-text-white-ter">How do I delete my own account <strong>and</strong> all the uploads associated with it?</h3>
     <article class="message">
       <div class="message-body">
-        For now, you will also have to contact me through my email above.<br>
+        For now, you will also have to contact me through my email at <a href="mailto:{{ globals.email }}">{{ globals.email }}</a>.<br>
         A feature to delete your own account by yourself is still <strong>work in progress</strong>.<br>
         Otherwise, if you do not mind a record of your username being left here, it should be easy to bulk delete all your uploads from the Dashboard anyway.
       </div>

@@ -24,7 +24,7 @@ self.relativePath = (root, path) => {
  * Based on https://github.com/pillarjs/send/blob/0.18.0/index.js
  * Copyright(c) 2012 TJ Holowaychuk
  * Copyright(c) 2014-2022 Douglas Christopher Wilson
- * MIT Licensed
+ * MIT License
  */
 
 self.isRangeFresh = (req, res) => {

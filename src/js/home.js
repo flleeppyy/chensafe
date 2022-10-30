@@ -54,8 +54,8 @@ const page = {
   urlsQueue: [],
   activeUrlsQueue: 0,
 
-  // Include BMP for uploads preview only, cause the real images will be used
-  // Sharp isn't capable of making their thumbnails for dashboard and album public pages
+  // Include BMP for uploads preview only, because the real images will be used instead of server-generated thumbnails
+  // Sharp is not capable of generating thumbnails for BMP images
   imageExts: ['.gif', '.jpeg', '.jpg', '.png', '.svg', '.tif', '.tiff', '.webp', '.bmp'],
   videoExts: ['.avi', '.m2ts', '.m4v', '.mkv', '.mov', '.mp4', '.webm', '.wmv'],
 
@@ -218,6 +218,7 @@ page.preparePage = () => {
 
 page.verifyToken = token => {
   return axios.post('api/tokens/verify', { token }).then(response => {
+    axios.defaults.headers.common.token = token
     localStorage[lsKeys.token] = token
     page.token = token
 
@@ -326,12 +327,7 @@ page.setActiveTab = index => {
 }
 
 page.fetchAlbums = () => {
-  return axios.get('api/albums', {
-    headers: {
-      simple: '1',
-      token: page.token
-    }
-  }).then(response => {
+  return axios.get('api/albums', { headers: { simple: '1' } }).then(response => {
     if (response.data.success === false) {
       return swal('An error occurred!', response.data.description, 'error')
     }
@@ -570,10 +566,9 @@ page.prepareDropzone = () => {
         }]
       }, {
         headers: {
-          token: page.token,
           // Unlike the options above (e.g. albumid, filelength, etc.),
           // strip tags cannot yet be configured per file with this API
-          striptags: page.stripTags
+          striptags: page.stripTags || ''
         }
       }).catch(error => page.formatAxiosError(error)).then(response => {
         file.previewElement.querySelector('.descriptive-progress').classList.add('is-hidden')
@@ -664,10 +659,9 @@ page.processUrlsQueue = () => {
       urls: [file.url]
     }, {
       headers: {
-        token: page.token,
-        albumid: page.album,
-        age: page.uploadAge,
-        filelength: page.fileLength
+        albumid: page.album || '',
+        age: page.uploadAge || '',
+        filelength: page.fileLength || ''
       }
     }).catch(error => page.formatAxiosError(error)).then(response => {
       return finishedUrlUpload(file, response.data)
@@ -794,10 +788,6 @@ page.createAlbum = () => {
       description: document.querySelector('#swalDescription').value.trim(),
       download: document.querySelector('#swalDownload').checked,
       public: document.querySelector('#swalPublic').checked
-    }, {
-      headers: {
-        token: page.token
-      }
     }).then(response => {
       if (response.data.success === false) {
         return swal('An error occurred!', response.data.description, 'error')
@@ -860,7 +850,7 @@ page.prepareUploadConfig = () => {
             default: page.fileIdentifierLength.default,
             round: true
           }
-        : undefined,
+        : void 0,
       help: true, // true means auto-generated, for number-based configs only
       disabled: fileIdentifierLength && page.fileIdentifierLength.force
     },
@@ -989,9 +979,9 @@ page.prepareUploadConfig = () => {
       } else {
         const stored = localStorage[lsKeys[key]]
         if (Array.isArray(conf.select)) {
-          value = conf.select.find(sel => sel.value === stored)
-            ? stored
-            : undefined
+          if (conf.select.find(sel => sel.value === stored)) {
+            value = stored
+          }
         } else {
           value = stored
         }

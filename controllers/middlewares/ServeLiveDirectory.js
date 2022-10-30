@@ -62,7 +62,13 @@ class ServeLiveDirectory {
     this.#options = options
   }
 
-  handler (req, res, file) {
+  get (path) {
+    const file = this.instance.get(path)
+
+    return file
+  }
+
+  handler (req, res, path, file) {
     // Set Content-Type
     res.type(file.extension)
 
@@ -93,12 +99,24 @@ class ServeLiveDirectory {
       return next()
     }
 
-    const file = this.instance.get(req.path)
+    // If root path is set, ensure it matches the request
+    let path = req.path
+    if (this.#options.root) {
+      if (path.indexOf(this.#options.root) === 0) {
+        // Re-map path for internal .get()
+        path = path.replace(this.#options.root, '')
+      } else {
+        // Immediately proceed to next middleware otherwise
+        return next()
+      }
+    }
+
+    const file = this.get(path)
     if (file === undefined) {
       return next()
     }
 
-    return this.handler(req, res, file)
+    return this.handler(req, res, path, file)
   }
 
   #setHeaders (req, res, file) {

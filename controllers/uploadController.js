@@ -1,16 +1,19 @@
 const blake3 = require('blake3')
 const contentDisposition = require('content-disposition')
-const fetch = require('node-fetch')
-const fs = require('fs')
+const jetpack = require('fs-jetpack')
+const parseDuration = require('parse-duration')
 const path = require('path')
 const randomstring = require('randomstring')
 const searchQuery = require('search-query-parser')
+const auth = require('./authController')
 const paths = require('./pathsController')
 const perms = require('./permissionController')
 const utils = require('./utilsController')
 const ClientError = require('./utils/ClientError')
+const Constants = require('./utils/Constants')
+const ScannerManager = require('./utils/ScannerManager')
 const ServerError = require('./utils/ServerError')
-const config = require('./../config')
+const config = require('./utils/ConfigManager')
 const logger = require('./../logger')
 
 /** Deprecated config options */
@@ -31,12 +34,40 @@ const fileIdentifierLengthChangeable = !config.uploads.fileIdentifierLength.forc
   typeof config.uploads.fileIdentifierLength.min === 'number' &&
   typeof config.uploads.fileIdentifierLength.max === 'number'
 
+// Regular file uploads
 const maxSize = parseInt(config.uploads.maxSize)
 const maxSizeBytes = maxSize * 1e6
+
+// Max files (or URLs for URL uploads) per POST request
+const maxFilesPerUpload = 20
+
+// https://github.com/mscdex/busboy/tree/v1.6.0#exports
+const busboyOptions = {
+  // This would otherwise defaults to latin1
+  defParamCharset: 'utf8',
+  limits: {
+    fileSize: maxSizeBytes,
+    // Maximum number of non-file fields.
+    // Dropzone.js will add 6 extra fields for chunked uploads.
+    // We don't use them for anything else.
+    fields: 6,
+    // Maximum number of file fields.
+    // Chunked uploads still need to provide ONLY 1 file field.
+    // Otherwise, only one of the files will end up being properly stored,
+    // and that will also be as a chunk.
+    files: maxFilesPerUpload
+  }
+}
+
+// URL uploads
 const urlMaxSize = parseInt(config.uploads.urlMaxSize)
 const urlMaxSizeBytes = urlMaxSize * 1e6
 
-const maxFilesPerUpload = 20
+// URL uploads timeout for fetch() instances
+// Please be aware that uWebSockets.js has a hard-coded timeout of 10s of no activity,
+// so letting fetch() run for more than 10s may cause connection to uploaders to drop early,
+// thus preventing chensafe from responding to uploaders about their URL uploads.
+const urlFetchTimeout = 10 * 1000 // 10 seconds
 
 const chunkedUploads = config.uploads.chunkSize &&
   typeof config.uploads.chunkSize === 'object' &&
@@ -45,8 +76,6 @@ const chunkedUploadsTimeout = config.uploads.chunkSize.timeout || 1800000
 const chunksData = {}
 // Hard-coded min chunk size of 1 MB (e.g. 50 MB = max 50 chunks)
 const maxChunksCount = maxSize
-// Use fs.copyFile() instead of fs.rename() if chunks dir is NOT inside uploads dir
-const chunksCopyFile = !paths.chunks.startsWith(paths.uploads)
 
 const extensionsFilter = Array.isArray(config.extensionsFilter) &&
   config.extensionsFilter.length
@@ -99,19 +128,10 @@ class ChunksData {
 const initChunks = async uuid => {
   if (chunksData[uuid] === undefined) {
     chunksData[uuid] = new ChunksData(uuid)
-
-    const exist = await paths.access(chunksData[uuid].root)
-      .catch(err => {
-        // Re-throw error only if not directory is missing error
-        if (err.code !== 'ENOENT') throw err
-        return false
-      })
-    if (!exist) {
-      await paths.mkdir(chunksData[uuid].root)
-    }
+    await jetpack.dirAsync(chunksData[uuid].root, { empty: true })
 
     // Init write & hasher streams
-    chunksData[uuid].writeStream = fs.createWriteStream(chunksData[uuid].path, { flags: 'a' })
+    chunksData[uuid].writeStream = jetpack.createWriteStream(chunksData[uuid].path, { flags: 'a' })
     chunksData[uuid].hashStream = enableHashing && blake3.createHash()
   } else if (chunksData[uuid].processing) {
     // Wait for the first spawned init tasks
@@ -177,6 +197,12 @@ self.getUniqueUploadIdentifier = async (length, extension = '', res) => {
         continue
       }
 
+      /*
+      if (utils.devmode) {
+        logger.debug(`upload.onHold: ${utils.inspect(self.onHold)}`)
+      }
+      */
+
       // Unhold identifier once the Response has been sent
       if (res) {
         if (!res.locals.identifiers) {
@@ -187,14 +213,11 @@ self.getUniqueUploadIdentifier = async (length, extension = '', res) => {
       }
     } else {
       // Otherwise, check for physical files' full name matches
-      try {
-        const name = identifier + extension
-        await paths.access(path.join(paths.uploads, name))
+      const name = identifier + extension
+      const exists = jetpack.existsAsync(path.join(paths.uploads, name))
+      if (exists) {
         logger.debug(`${name} is already in use (${i + 1}/${utils.idMaxTries}).`)
         continue
-      } catch (error) {
-        // Re-throw non-ENOENT error
-        if (error & error.code !== 'ENOENT') throw error
       }
     }
 
@@ -210,7 +233,12 @@ self.unholdUploadIdentifiers = res => {
 
   for (const identifier of res.locals.identifiers) {
     self.onHold.delete(identifier)
-    logger.debug(`Unheld identifier ${identifier}.`)
+
+    /*
+    if (utils.devmode) {
+      logger.debug(`upload.onHold: ${utils.inspect(self.onHold)} -> ${utils.inspect(identifier)}`)
+    }
+    */
   }
 
   delete res.locals.identifiers
@@ -254,12 +282,16 @@ self.parseStripTags = stripTags => {
 /** File uploads */
 
 self.upload = async (req, res) => {
-  // Assert Request type
-  // Multipart for regular uploads, JSON for URL uploads
-  const isMultipart = req.is('multipart/form-data')
-  const isJson = req.is('application/json')
-  if (!isMultipart && !isJson) {
-    throw new ClientError('Request Content-Type must be either multipart/form-data or application/json.')
+  // Assert Request type (skip for POST /nojs requests)
+  let isMultipart = req.locals.nojs
+  let isJson
+  if (!req.locals.nojs) {
+    // Multipart for regular uploads, JSON for URL uploads
+    isMultipart = req.is('multipart/form-data')
+    isJson = req.is('application/json')
+    if (!isMultipart && !isJson) {
+      throw new ClientError('Request Content-Type must be either multipart/form-data or application/json.')
+    }
   }
 
   if (config.privateUploadGroup) {
@@ -282,49 +314,36 @@ self.upload = async (req, res) => {
   }
 }
 
+self.unfreezeChunksData = async (files = [], increase = false) => {
+  for (const file of files) {
+    if (!file.chunksData) return
+    if (increase) file.chunksData.chunks++
+    file.chunksData.processing = false
+  }
+}
+
+self.cleanUpFiles = async (files = []) => {
+  // Unlink temp files
+  await Promise.all(files.map(async file => {
+    if (file.chunksData) {
+      return self.cleanUpChunks(file.chunksData.uuid).catch(logger.error)
+    } else if (file.filename) {
+      return utils.unlinkFile(file.filename).catch(logger.error)
+    }
+  }))
+}
+
 self.actuallyUpload = async (req, res, data = {}) => {
   // Init empty Request.body and Request.files
   req.body = {}
   req.files = []
 
-  const unfreezeChunksData = async () => {
-    req.files.forEach(file => {
-      if (!file.chunksData) return
-      file.chunksData.processing = false
-    })
-  }
-
-  const cleanUpFiles = async () => {
-    // Unhold identifiers generated via self.getUniqueUploadIdentifier()
-    self.unholdUploadIdentifiers(res)
-
-    // Unlink temp files
-    return Promise.all(req.files.map(async file => {
-      if (!file.filename) return
-      return utils.unlinkFile(file.filename).catch(logger.error)
-    }))
-  }
-
-  await req.multipart({
-    // https://github.com/mscdex/busboy/tree/v1.6.0#exports
-    // This would otherwise defaults to latin1
-    defParamCharset: 'utf8',
-    limits: {
-      fileSize: maxSizeBytes,
-      // Maximum number of non-file fields.
-      // Dropzone.js will add 6 extra fields for chunked uploads.
-      // We don't use them for anything else.
-      fields: 6,
-      // Maximum number of file fields.
-      // Chunked uploads still need to provide ONLY 1 file field.
-      // Otherwise, only one of the files will end up being properly stored,
-      // and that will also be as a chunk.
-      files: maxFilesPerUpload
-    }
-  }, async field => {
-    // Keep non-files fields in Request.body
-    // Since fields get processed in sequence depending on the order at which they were defined,
-    // chunked uploads data must be set before the files[] field which contain the actual file
+  await req.multipart(busboyOptions, async field => {
+    /*
+      Keep non-files fields in body.
+      Since fields get processed in sequence, depending on the order at which they were defined,
+      chunked uploads data must be set before the "files[]"" field which contain the actual file.
+    */
     if (field.truncated) {
       // Re-map Dropzone chunked uploads keys so people can manually use the API without prepending 'dz'
       let name = field.name
@@ -332,140 +351,118 @@ self.actuallyUpload = async (req, res, data = {}) => {
         name = name.replace(/^dz/, '')
       }
 
-      req.body[name] = field.value
+      req.body[name] = field.value || ''
       return
     }
 
-    // Process files immediately and push into Request.files array
-    if (field.file) {
-      // Push immediately as we will only be adding props into the file object down the line
-      const file = {
-        albumid: data.albumid,
-        age: data.age,
-        originalname: field.file.name || '',
-        mimetype: field.mime_type || '',
-        isChunk: req.body.uuid !== undefined &&
-          req.body.chunkindex !== undefined
-      }
-      req.files.push(file)
+    if (!field.file) return
 
-      if (file.isChunk) {
-        if (!chunkedUploads) {
-          throw new ClientError('Chunked uploads are disabled at the moment.')
-        } else if (req.files.length > 1) {
-          throw new ClientError('Chunked uploads may only be uploaded 1 chunk at a time.')
-        }
-      }
-
-      file.extname = utils.extname(file.originalname)
-      if (self.isExtensionFiltered(file.extname)) {
-        throw new ClientError(`${file.extname ? `${file.extname.substr(1).toUpperCase()} files` : 'Files with no extension'} are not permitted.`)
-      }
-
-      if (file.isChunk) {
-        // Re-map UUID property to IP-specific UUID
-        const uuid = `${req.ip}_${req.body.uuid}`
-        // Calling initChunks() will also reset the chunked uploads' timeout
-        file.chunksData = await initChunks(uuid)
-        file.filename = file.chunksData.filename
-        file.path = file.chunksData.path
-      } else {
-        const length = self.parseFileIdentifierLength(req.headers.filelength)
-        const identifier = await self.getUniqueUploadIdentifier(length, file.extname, res)
-        file.filename = identifier + file.extname
-        file.path = path.join(paths.uploads, file.filename)
-      }
-
-      const readStream = field.file.stream
-      let writeStream
-      let hashStream
-      let _reject
-
-      // Write the file into disk, and supply required props into file object
-      await new Promise((resolve, reject) => {
-        // Keep reference to Promise's reject function to allow unlistening events
-        _reject = reject
-
-        // Ensure this Promise's status can be asserted later
-        const _resolve = () => {
-          file.promised = true
-          return resolve()
-        }
-
-        readStream.once('error', _reject)
-
-        if (file.isChunk) {
-          writeStream = file.chunksData.writeStream
-          hashStream = file.chunksData.hashStream
-        } else {
-          writeStream = fs.createWriteStream(file.path)
-          hashStream = enableHashing && blake3.createHash()
-        }
-
-        // Re-init stream errors listeners for this Request
-        writeStream.once('error', _reject)
-
-        if (hashStream) {
-          hashStream.once('error', _reject)
-          readStream.on('data', data => {
-            // .dispose() will destroy this internal component,
-            // so use it as an indicator of whether the hashStream has been .dispose()'d
-            if (hashStream.hash.hash) {
-              hashStream.update(data)
-            }
-          })
-        }
-
-        if (file.isChunk) {
-          // We listen for readStream's end event
-          readStream.once('end', () => _resolve())
-        } else {
-          // We immediately listen for writeStream's finish event
-          writeStream.once('finish', () => {
-            file.size = writeStream.bytesWritten
-            if (hashStream && hashStream.hash.hash) {
-              const hash = hashStream.digest('hex')
-              file.hash = file.size === 0
-                ? ''
-                : hash
-            }
-            return _resolve()
-          })
-        }
-
-        // Pipe readStream to writeStream
-        // Do not end writeStream when readStream finishes if it's a chunk upload
-        readStream
-          .pipe(writeStream, { end: !file.isChunk })
-      }).catch(error => {
-        // Dispose of unfinished write & hasher streams
-        if (writeStream && !writeStream.destroyed) {
-          writeStream.destroy()
-        }
-        if (hashStream && hashStream.hash.hash) {
-          hashStream.dispose()
-        }
-
-        // Re-throw error
-        throw error
-      }).finally(() => {
-        if (!file.isChunk) return
-        // Unlisten streams' error event for this Request if it's a chunk upload
-        utils.unlistenEmitters([writeStream, hashStream], 'error', _reject)
-      })
-
-      // file.size is not populated if a chunk upload, so ignore
-      if (config.filterEmptyFile && !file.isChunk && file.size === 0) {
-        throw new ClientError('Empty files are not allowed.')
-      }
+    // Push immediately as we will only be adding props into the file object down the line
+    const file = {
+      field: field.name,
+      albumid: data.albumid,
+      age: data.age,
+      originalname: field.file.name || '',
+      mimetype: field.mime_type || 'application/octet-stream'
     }
+    req.files.push(file)
+
+    file.extname = utils.extname(file.originalname)
+
+    const isChunk = typeof req.body.uuid === 'string' && Boolean(req.body.uuid)
+    if (isChunk) {
+      // Re-map UUID property to IP-specific UUID
+      const uuid = `${req.ip}_${req.body.uuid}`
+      // Calling initChunks() will also reset the chunked uploads' timeout
+      file.chunksData = await initChunks(uuid)
+      file.filename = file.chunksData.filename
+      file.path = file.chunksData.path
+    } else {
+      const length = self.parseFileIdentifierLength(req.headers.filelength)
+      const identifier = await self.getUniqueUploadIdentifier(length, file.extname, res)
+      file.filename = identifier + file.extname
+      file.path = path.join(paths.uploads, file.filename)
+    }
+
+    const readStream = field.file.stream
+    let writeStream
+    let hashStream
+    let _reject
+
+    // Write the file into disk, and supply required props into file object
+    await new Promise((resolve, reject) => {
+      // Keep reference to Promise's reject function to allow unlistening events from Promise.finally() block
+      _reject = reject
+
+      if (file.chunksData) {
+        writeStream = file.chunksData.writeStream
+        hashStream = file.chunksData.hashStream
+      } else {
+        writeStream = jetpack.createWriteStream(file.path)
+        hashStream = enableHashing && blake3.createHash()
+      }
+
+      readStream.once('error', _reject)
+
+      // Re-init stream errors listeners for this Request
+      writeStream.once('error', _reject)
+
+      if (hashStream) {
+        hashStream.once('error', _reject)
+
+        // Ensure readStream will only be resumed later down the line by readStream.pipe()
+        readStream.pause()
+        readStream.on('data', data => {
+          // .dispose() will destroy this internal component,
+          // so use it as an indicator of whether the hashStream has been .dispose()'d
+          if (hashStream.hash?.hash) {
+            hashStream.update(data)
+          }
+        })
+      }
+
+      if (file.chunksData) {
+        // We listen for readStream's end event
+        readStream.once('end', () => resolve())
+      } else {
+        // We immediately listen for writeStream's finish event
+        writeStream.once('finish', () => {
+          file.size = writeStream.bytesWritten || 0
+          if (hashStream?.hash?.hash) {
+            const hash = hashStream.digest('hex')
+            file.hash = file.size === 0 ? '' : hash
+          }
+          return resolve()
+        })
+      }
+
+      // Pipe readStream to writeStream
+      // Do not end writeStream when readStream finishes if it's a chunk upload
+      readStream.pipe(writeStream, { end: !file.chunksData })
+    }).catch(error => {
+      // Dispose of unfinished write & hasher streams
+      if (writeStream && !writeStream.destroyed) {
+        writeStream.destroy()
+      }
+      if (hashStream?.hash?.hash) {
+        hashStream.dispose()
+      }
+
+      // Re-throw error
+      throw error
+    }).finally(() => {
+      if (!file.chunksData) return
+      // Unlisten streams' error event for this Request if it's a chunk upload
+      utils.unlistenEmitters([writeStream, hashStream], 'error', _reject)
+    })
   }).catch(error => {
     // Clean up temp files and held identifiers (do not wait)
-    cleanUpFiles()
-    unfreezeChunksData()
+    self.cleanUpFiles(req.files)
+    self.unfreezeChunksData(req.files)
 
-    // Response.multipart() itself may throw string errors
+    // Re-throw error
     if (typeof error === 'string') {
+      // Response.multipart() itself may throw string errors
       throw new ClientError(error)
     } else {
       throw error
@@ -476,43 +473,64 @@ self.actuallyUpload = async (req, res, data = {}) => {
     throw new ClientError('No files.')
   }
 
-  // If for some reason Request.multipart() resolves before a file's Promise
-  // Typically caused by something hanging up longer than
-  // uWebSockets.js' internal security timeout (10 seconds)
-  if (req.files.some(file => file.promised !== true)) {
-    // Clean up temp files and held identifiers (do not wait)
-    cleanUpFiles()
-    unfreezeChunksData()
+  // Validate files
+  try {
+    for (const file of req.files) {
+      if (file.field !== 'files[]') {
+        throw new ClientError(`Unexpected file-type field: ${file.field}`)
+      }
 
-    throw new ServerError()
+      if (self.isExtensionFiltered(file.extname)) {
+        throw new ClientError(`${file.extname ? `${file.extname.substr(1).toUpperCase()} files` : 'Files with no extension'} are not permitted.`)
+      }
+
+      if (config.filterEmptyFile && file.size === 0) {
+        throw new ClientError('Empty files are not allowed.')
+      }
+    }
+  } catch (error) {
+    // Clean up temp files and held identifiers (do not wait)
+    self.cleanUpFiles(req.files)
+    self.unfreezeChunksData(req.files)
+
+    // Re-throw error
+    throw error
   }
 
   // If chunked uploads is enabled and the uploaded file is a chunk, then just say that it was a success
-  // NOTE: We loop through Request.files for clarity,
-  // but we will actually have already rejected the Request
-  // if it has more than 1 file while being a chunk upload
   if (req.files.some(file => file.chunksData)) {
-    req.files.forEach(file => {
-      file.chunksData.chunks++
-      // Mark as ready to accept more chunk uploads or to finalize
-      file.chunksData.processing = false
-    })
+    self.unfreezeChunksData(req.files, true)
     return res.json({ success: true })
+  }
+
+  // If POST /nojs requests, additionally attempt to parse token from form input
+  if (req.locals.nojs) {
+    await new Promise((resolve, reject) => {
+      auth.optionalUser(req, res, error => {
+        if (error) return reject(error)
+        return resolve()
+      }, {
+        token: req.body.token
+      })
+    })
   }
 
   const filesData = req.files
 
-  if (utils.scan.instance) {
-    const scanResult = await self.scanFiles(req, filesData)
+  if (ScannerManager.instance) {
+    const scanResult = await self.scanFiles(req.locals.user, filesData)
     if (scanResult) {
       throw new ClientError(scanResult)
     }
   }
 
-  await self.stripTags(req, filesData)
+  // Strip tags, then update their size attribute, if required
+  if (self.parseStripTags(req.headers.striptags)) {
+    await self.stripTags(filesData)
+  }
 
-  const result = await self.storeFilesToDb(req, res, filesData)
-  return self.sendUploadResponse(req, res, result)
+  const stored = await self.storeFilesToDb(req, res, filesData)
+  return self.sendUploadResponse(req, res, stored)
 }
 
 /** URL uploads */
@@ -523,8 +541,8 @@ self.actuallyUploadUrls = async (req, res, data = {}) => {
   }
 
   const urls = req.body.urls
-  if (!urls || !(urls instanceof Array)) {
-    throw new ClientError('Missing "urls" property (array).')
+  if (!Array.isArray(urls) || !urls.length || urls.some(url => !/^https?:\/\//.test(url))) {
+    throw new ClientError('Bad request.')
   }
 
   if (urls.length > maxFilesPerUpload) {
@@ -561,9 +579,15 @@ self.actuallyUploadUrls = async (req, res, data = {}) => {
     }
 
     // Try to determine size early via Content-Length header,
-    // but continue anyway if it isn't a valid number
+    // but continue anyway if it isn't a valid number (some servers don't provide them)
+    const headStart = Date.now()
     try {
-      const head = await fetch(url, { method: 'HEAD', size: urlMaxSizeBytes })
+      const head = await utils.fetch(url, {
+        method: 'HEAD',
+        size: urlMaxSizeBytes, // limit max response body size
+        timeout: urlFetchTimeout
+      })
+
       if (head.status === 200) {
         const contentLength = parseInt(head.headers.get('content-length'))
         if (!Number.isNaN(contentLength)) {
@@ -571,7 +595,7 @@ self.actuallyUploadUrls = async (req, res, data = {}) => {
         }
       }
     } catch (ex) {
-      // Re-throw only if ClientError, otherwise ignore
+      // Re-throw only if ClientError (can be thrown by assertSize()), otherwise ignore
       if (ex instanceof ClientError) {
         throw ex
       }
@@ -588,11 +612,22 @@ self.actuallyUploadUrls = async (req, res, data = {}) => {
     let hashStream
 
     return Promise.resolve().then(async () => {
-      writeStream = fs.createWriteStream(file.path)
+      writeStream = jetpack.createWriteStream(file.path)
       hashStream = enableHashing && blake3.createHash()
 
-      // Limit max response body size with maximum allowed size
-      const fetchFile = await fetch(url, { method: 'GET', size: urlMaxSizeBytes })
+      // Reduce GET timeout by time already spent for HEAD request
+      const _timeout = urlFetchTimeout - (Date.now() - headStart)
+
+      // Skip early if HEAD fetch took too long
+      if (_timeout <= 0) {
+        throw new ClientError('Fetch timed out. Try again?')
+      }
+
+      const fetchFile = await utils.fetch(url, {
+        method: 'GET',
+        size: urlMaxSizeBytes, // limit max response body size
+        timeout: _timeout
+      })
         .then(res => new Promise((resolve, reject) => {
           if (res.status !== 200) {
             return resolve(res)
@@ -603,12 +638,17 @@ self.actuallyUploadUrls = async (req, res, data = {}) => {
 
           if (hashStream) {
             hashStream.once('error', reject)
+            res.body.pause()
             res.body.on('data', d => hashStream.update(d))
           }
 
           res.body.pipe(writeStream)
           writeStream.once('finish', () => resolve(res))
         }))
+        .catch(ex => {
+          // Re-throw node-fetch's errors as regular ClientError
+          throw new ClientError(`${ex.code ? `${ex.code}: ` : ''}${ex.message}`)
+        })
 
       if (fetchFile.status !== 200) {
         throw new ServerError(`${fetchFile.status} ${fetchFile.statusText}`)
@@ -654,16 +694,15 @@ self.actuallyUploadUrls = async (req, res, data = {}) => {
       const _name = _identifier + file.extname
 
       // Move .tmp file to the new filename
-      const destination = path.join(paths.uploads, _name)
-      await paths.rename(file.path, destination)
+      await jetpack.renameAsync(file.path, _name)
 
       // Then update the props with renewed information
       file.filename = _name
-      file.path = destination
+      file.path = path.join(paths.uploads, _name)
 
       // Finalize other file props
       const contentType = fetchFile.headers.get('content-type')
-      file.mimetype = contentType ? contentType.split(';')[0] : 'application/octet-stream'
+      file.mimetype = (contentType && contentType.split(';')[0]) || 'application/octet-stream'
       file.size = writeStream.bytesWritten
       file.hash = hashStream
         ? hashStream.digest('hex')
@@ -673,7 +712,7 @@ self.actuallyUploadUrls = async (req, res, data = {}) => {
       if (writeStream && !writeStream.destroyed) {
         writeStream.destroy()
       }
-      if (hashStream && hashStream.hash.hash) {
+      if (hashStream?.hash?.hash) {
         hashStream.dispose()
       }
 
@@ -689,27 +728,19 @@ self.actuallyUploadUrls = async (req, res, data = {}) => {
       }))
     }
 
-    // Re-throw suppressed errors as ClientError, otherwise as-is
-    const errorString = error.toString()
-    const suppress = [
-      / over limit:/
-    ]
-    if (suppress.some(t => t.test(errorString))) {
-      throw new ClientError(errorString)
-    } else {
-      throw error
-    }
+    // Re-throw errors
+    throw error
   })
 
-  if (utils.scan.instance) {
-    const scanResult = await self.scanFiles(req, filesData)
+  if (ScannerManager.instance) {
+    const scanResult = await self.scanFiles(req.locals.user, filesData)
     if (scanResult) {
       throw new ClientError(scanResult)
     }
   }
 
-  const result = await self.storeFilesToDb(req, res, filesData)
-  return self.sendUploadResponse(req, res, result)
+  const stored = await self.storeFilesToDb(req, res, filesData)
+  return self.sendUploadResponse(req, res, stored)
 }
 
 /** Chunk uploads */
@@ -720,22 +751,27 @@ self.finishChunks = async (req, res) => {
   }
 
   const files = req.body.files
-  if (!Array.isArray(files) || !files.length) {
+  if (!Array.isArray(files) || !files.length || files.some(file => {
+    return typeof file !== 'object' || !file.uuid
+  })) {
     throw new ClientError('Bad request.')
   }
 
   // Re-map UUID property to IP-specific UUID
   files.forEach(file => {
     file.uuid = `${req.ip}_${file.uuid}`
+    file.chunksData = chunksData[file.uuid]
   })
+
+  if (files.some(file => !file.chunksData || file.chunksData.processing)) {
+    throw new ClientError('Invalid file UUID, chunks data had already timed out, or is still processing. Try again?')
+  }
 
   return self.actuallyFinishChunks(req, res, files)
     .catch(error => {
       // Unlink temp files (do not wait)
       Promise.all(files.map(async file => {
-        if (file.uuid && chunksData[file.uuid]) {
-          return self.cleanUpChunks(file.uuid).catch(logger.error)
-        }
+        return self.cleanUpChunks(file.uuid).catch(logger.error)
       }))
       // Re-throw errors
       throw error
@@ -745,14 +781,6 @@ self.finishChunks = async (req, res) => {
 self.actuallyFinishChunks = async (req, res, files) => {
   const filesData = []
   await Promise.all(files.map(async file => {
-    if (!file.uuid || typeof chunksData[file.uuid] === 'undefined') {
-      throw new ClientError('Invalid file UUID, or chunks data had already timed out. Try again?')
-    }
-
-    if (chunksData[file.uuid].processing) {
-      throw new ClientError('Previous chunk upload is still being processed. Try again?')
-    }
-
     // Suspend timeout
     // If the chunk errors out there, it will be immediately cleaned up anyway
     chunksData[file.uuid].clearTimeout()
@@ -775,7 +803,7 @@ self.actuallyFinishChunks = async (req, res, files) => {
 
     const age = self.assertRetentionPeriod(req.locals.user, file.age)
 
-    let size = file.size
+    let size = typeof file.size === 'number' ? file.size : undefined
     if (size === undefined) {
       size = bytesWritten
     } else if (size !== bytesWritten) {
@@ -792,9 +820,9 @@ self.actuallyFinishChunks = async (req, res, files) => {
     const tmpfile = path.join(chunksData[file.uuid].root, chunksData[file.uuid].filename)
 
     // Double-check file size
-    const lstat = await paths.lstat(tmpfile)
-    if (lstat.size !== size) {
-      throw new ClientError(`Resulting physical file size (${lstat.size}) does not match expected size (${size}).`)
+    const stat = await jetpack.inspectAsync(tmpfile)
+    if (stat.size !== size) {
+      throw new ClientError(`Resulting physical file size (${stat.size}) does not match expected size (${size}).`)
     }
 
     // Generate name
@@ -803,13 +831,8 @@ self.actuallyFinishChunks = async (req, res, files) => {
     const name = identifier + extname
 
     // Move tmp file to final destination
-    // For fs.copyFile(), tmpfile will eventually be unlinked by self.cleanUpChunks()
     const destination = path.join(paths.uploads, name)
-    if (chunksCopyFile) {
-      await paths.copyFile(tmpfile, destination)
-    } else {
-      await paths.rename(tmpfile, destination)
-    }
+    await jetpack.moveAsync(tmpfile, destination)
 
     // Continue even when encountering errors
     await self.cleanUpChunks(file.uuid).catch(logger.error)
@@ -823,7 +846,7 @@ self.actuallyFinishChunks = async (req, res, files) => {
       filename: name,
       originalname: file.original || '',
       extname,
-      mimetype: file.type || '',
+      mimetype: file.type || 'application/octet-stream',
       path: destination,
       size,
       hash,
@@ -832,37 +855,35 @@ self.actuallyFinishChunks = async (req, res, files) => {
     })
   }))
 
-  if (utils.scan.instance) {
-    const scanResult = await self.scanFiles(req, filesData)
+  if (ScannerManager.instance) {
+    const scanResult = await self.scanFiles(req.locals.user, filesData)
     if (scanResult) {
       throw new ClientError(scanResult)
     }
   }
 
-  await self.stripTags(req, filesData)
+  // Strip tags, then update their size attribute, if required
+  if (self.parseStripTags(req.headers.striptags)) {
+    await self.stripTags(filesData)
+  }
 
-  const result = await self.storeFilesToDb(req, res, filesData)
-  return self.sendUploadResponse(req, res, result)
+  const stored = await self.storeFilesToDb(req, res, filesData)
+  return self.sendUploadResponse(req, res, stored)
 }
 
 self.cleanUpChunks = async uuid => {
+  if (!uuid || !chunksData[uuid]) return
+
   // Dispose of unfinished write & hasher streams
   if (chunksData[uuid].writeStream && !chunksData[uuid].writeStream.destroyed) {
     chunksData[uuid].writeStream.destroy()
   }
-  if (chunksData[uuid].hashStream && chunksData[uuid].hashStream.hash.hash) {
+  if (chunksData[uuid].hashStream?.hash?.hash) {
     chunksData[uuid].hashStream.dispose()
   }
 
-  // Remove tmp file
-  await paths.unlink(path.join(chunksData[uuid].root, chunksData[uuid].filename))
-    .catch(error => {
-      // Re-throw non-ENOENT error
-      if (error.code !== 'ENOENT') logger.error(error)
-    })
-
-  // Remove UUID dir
-  await paths.rmdir(chunksData[uuid].root)
+  // Remove UUID dir and everything in it
+  await jetpack.removeAsync(chunksData[uuid].root)
 
   // Delete cached chunks data
   delete chunksData[uuid]
@@ -871,7 +892,7 @@ self.cleanUpChunks = async uuid => {
 /** Virus scanning (ClamAV) */
 
 self.assertScanUserBypass = (user, filenames) => {
-  if (!user || !utils.scan.groupBypass) {
+  if (!user || !ScannerManager.groupBypass) {
     return false
   }
 
@@ -879,8 +900,8 @@ self.assertScanUserBypass = (user, filenames) => {
     filenames = [filenames]
   }
 
-  logger.debug(`[ClamAV]: ${filenames.join(', ')}: Skipped, uploaded by ${user.username} (${utils.scan.groupBypass})`)
-  return perms.is(user, utils.scan.groupBypass)
+  logger.debug(`[ClamAV]: ${filenames.join(', ')}: Skipped, uploaded by ${user.username} (${ScannerManager.groupBypass})`)
+  return perms.is(user, ScannerManager.groupBypass)
 }
 
 self.assertScanFileBypass = data => {
@@ -889,22 +910,22 @@ self.assertScanFileBypass = data => {
   }
 
   const extname = data.extname || utils.extname(data.filename)
-  if (utils.scan.whitelistExtensions && utils.scan.whitelistExtensions.includes(extname)) {
+  if (ScannerManager.whitelistExtensions && ScannerManager.whitelistExtensions.includes(extname)) {
     logger.debug(`[ClamAV]: ${data.filename}: Skipped, extension whitelisted`)
     return true
   }
 
-  if (utils.scan.maxSize && data.size !== undefined && data.size > utils.scan.maxSize) {
-    logger.debug(`[ClamAV]: ${data.filename}: Skipped, size ${data.size} > ${utils.scan.maxSize}`)
+  if (ScannerManager.maxSize && data.size !== undefined && data.size > ScannerManager.maxSize) {
+    logger.debug(`[ClamAV]: ${data.filename}: Skipped, size ${data.size} > ${ScannerManager.maxSize}`)
     return true
   }
 
   return false
 }
 
-self.scanFiles = async (req, filesData) => {
+self.scanFiles = async (user, filesData) => {
   const filenames = filesData.map(file => file.filename)
-  if (self.assertScanUserBypass(req.locals.user, filenames)) {
+  if (self.assertScanUserBypass(user, filenames)) {
     return false
   }
 
@@ -914,7 +935,7 @@ self.scanFiles = async (req, filesData) => {
     if (self.assertScanFileBypass(file)) return
 
     logger.debug(`[ClamAV]: ${file.filename}: Scanning\u2026`)
-    const response = await utils.scan.instance.isInfected(file.path)
+    const response = await ScannerManager.instance.isInfected(file.path)
     if (response.isInfected) {
       logger.log(`[ClamAV]: ${file.filename}: ${response.viruses.join(', ')}`)
       foundThreats.push(...response.viruses)
@@ -949,13 +970,15 @@ self.scanFiles = async (req, filesData) => {
 
 /** Strip tags (EXIF, etc.) */
 
-self.stripTags = async (req, filesData) => {
-  if (!self.parseStripTags(req.headers.striptags)) return
-
+self.stripTags = async filesData => {
   try {
-    await Promise.all(filesData.map(async file =>
-      utils.stripTags(file.filename, file.extname)
-    ))
+    await Promise.all(filesData.map(async file => {
+      // Update size attribute if applicable
+      const stat = await utils.stripTags(file.filename, file.extname)
+      if (stat) {
+        file.size = stat.size
+      }
+    }))
   } catch (error) {
     // Unlink temp files (do not wait)
     Promise.all(filesData.map(async file =>
@@ -970,11 +993,11 @@ self.stripTags = async (req, filesData) => {
 /** Database functions */
 
 self.storeFilesToDb = async (req, res, filesData) => {
-  const files = []
-  const exists = []
+  const stored = []
   const albumids = []
 
-  await Promise.all(filesData.map(async file => {
+  // for-loop to prioritize sequential ordering over multiple async sub-tasks
+  for (const file of filesData) {
     if (enableHashing) {
       // Check if the file exists by checking its hash and size
       const dbFile = await utils.db.table('files')
@@ -989,8 +1012,6 @@ self.storeFilesToDb = async (req, res, filesData) => {
           hash: file.hash,
           size: String(file.size)
         })
-        // Select expirydate to display expiration date of existing files as well
-        .select('name', 'expirydate')
         .first()
 
       if (dbFile) {
@@ -1004,8 +1025,11 @@ self.storeFilesToDb = async (req, res, filesData) => {
           dbFile.original = file.originalname
         }
 
-        exists.push(dbFile)
-        return
+        stored.push({
+          file: dbFile,
+          repeated: true
+        })
+        continue
       }
     }
 
@@ -1033,15 +1057,16 @@ self.storeFilesToDb = async (req, res, filesData) => {
       data.expirydate = data.timestamp + (file.age * 3600) // Hours to seconds
     }
 
-    files.push(data)
+    stored.push({ file: data })
 
     // Generate thumbs, but do not wait
     if (utils.mayGenerateThumb(file.extname)) {
       utils.generateThumbs(file.filename, file.extname, true).catch(logger.error)
     }
-  }))
+  }
 
-  if (files.length) {
+  const fresh = stored.filter(entry => !entry.repeated)
+  if (fresh.length) {
     // albumids should be empty if non-registerd users (no auth requests)
     let authorizedIds = []
     if (albumids.length) {
@@ -1052,9 +1077,9 @@ self.storeFilesToDb = async (req, res, filesData) => {
         .then(rows => rows.map(row => row.id))
 
       // Remove albumid if user do not own the album
-      for (const file of files) {
-        if (file.albumid !== null && !authorizedIds.includes(file.albumid)) {
-          file.albumid = null
+      for (const entry of fresh) {
+        if (entry.file.albumid !== null && !authorizedIds.includes(entry.file.albumid)) {
+          entry.file.albumid = null
         }
       }
     }
@@ -1062,7 +1087,7 @@ self.storeFilesToDb = async (req, res, filesData) => {
     await utils.db.transaction(async trx => {
       // Insert new files to DB
       await trx('files')
-        .insert(files)
+        .insert(fresh.map(entry => entry.file))
       utils.invalidateStatsCache('uploads')
 
       // Update albums' timestamp
@@ -1075,35 +1100,42 @@ self.storeFilesToDb = async (req, res, filesData) => {
     })
   }
 
-  return [...files, ...exists]
+  return stored
 }
 
 /** Final response */
 
-self.sendUploadResponse = async (req, res, result) => {
+self.sendUploadResponse = async (req, res, stored) => {
   // Send response
   return res.json({
     success: true,
-    files: result.map(file => {
+    files: stored.map(entry => {
       const map = {
-        name: file.name,
-        url: `${utils.conf.domain ? `${utils.conf.domain}/` : ''}${file.name}`
+        name: entry.file.name,
+        original: entry.file.original,
+        url: `${config.domain ? `${config.domain}/` : ''}${entry.file.name}`,
+        hash: entry.file.hash,
+        size: Number(entry.file.size)
       }
 
       // If a temporary upload, add expiry date
-      if (file.expirydate) {
-        map.expirydate = file.expirydate
+      if (entry.file.expirydate) {
+        map.expirydate = entry.file.expirydate
       }
 
       // If on /nojs route, add original name
       if (req.path === '/nojs') {
-        map.original = file.original
+        map.original = entry.file.original
       }
 
       // If uploaded by user, add delete URL (intended for ShareX and its derivatives)
       // Homepage uploader will not use this (use dashboard instead)
       if (req.locals.user) {
-        map.deleteUrl = `${utils.conf.homeDomain}/file/${file.name}?delete`
+        map.deleteUrl = `${config.homeDomain || ''}/file/${entry.file.name}?delete`
+      }
+
+      if (entry.repeated) {
+        map.repeated = true
       }
 
       return map
@@ -1152,7 +1184,7 @@ self.list = async (req, res) => {
   }
 
   const albumid = req.path_parameters && Number(req.path_parameters.albumid)
-  const basedomain = utils.conf.domain
+  const basedomain = config.domain
 
   // Thresholds for regular users (usergroups lower than moderator)
   const MAX_WILDCARDS_IN_KEY = 2
@@ -1160,19 +1192,26 @@ self.list = async (req, res) => {
   const MAX_SORT_KEYS = 2
   const MAX_IS_KEYS = 1
 
+  // Timezone offset
+  let timezoneOffset = 0
+  if (minoffset !== undefined) {
+    timezoneOffset = 60000 * (utils.timezoneOffset - minoffset)
+  }
+
   const filterObj = {
     uploaders: [],
     excludeUploaders: [],
     queries: {
       exclude: {}
     },
-    typeIs: [
-      'image',
-      'video',
-      'audio'
-    ],
+    typeIs: {
+      image: Constants.IMAGE_EXTS,
+      video: Constants.VIDEO_EXTS,
+      audio: Constants.AUDIO_EXTS
+    },
     flags: {}
   }
+  const typeIsKeys = Object.keys(filterObj.typeIs)
 
   const sortObj = {
     // Cast columns to specific type if they are stored differently
@@ -1188,6 +1227,7 @@ self.list = async (req, res) => {
     // Columns with which to use SQLite's NULLS LAST option
     nullsLast: [
       'userid',
+      'type',
       'albumid',
       'expirydate',
       'ip'
@@ -1222,7 +1262,7 @@ self.list = async (req, res) => {
   }
 
   if (filters) {
-    const keywords = []
+    const keywords = ['type']
 
     // Only allow filtering by 'albumid' when not listing a specific album's uploads
     if (isNaN(albumid)) {
@@ -1329,29 +1369,23 @@ self.list = async (req, res) => {
       }
     }
 
-    const parseDate = (date, minoffset, resetMs) => {
+    const parseDate = (date, resetMs) => {
       // [YYYY][/MM][/DD] [HH][:MM][:SS]
       // e.g. 2020/01/01 00:00:00, 2018/01/01 06, 2019/11, 12:34:00
-      const match = date.match(/^(\d{4})?(\/\d{2})?(\/\d{2})?\s?(\d{2})?(:\d{2})?(:\d{2})?$/)
+      const formattedMatch = date.match(/^(\d{4})?(\/\d{2})?(\/\d{2})?\s?(\d{2})?(:\d{2})?(:\d{2})?$/)
+      if (formattedMatch) {
+        const dateObj = new Date(Date.now() + timezoneOffset)
 
-      if (match) {
-        let offset = 0
-        if (minoffset !== undefined) {
-          offset = 60000 * (utils.timezoneOffset - minoffset)
+        if (formattedMatch[1] !== undefined) {
+          dateObj.setFullYear(Number(formattedMatch[1]), // full year
+            formattedMatch[2] !== undefined ? (Number(formattedMatch[2].slice(1)) - 1) : 0, // month, zero-based
+            formattedMatch[3] !== undefined ? Number(formattedMatch[3].slice(1)) : 1) // date
         }
 
-        const dateObj = new Date(Date.now() + offset)
-
-        if (match[1] !== undefined) {
-          dateObj.setFullYear(Number(match[1]), // full year
-            match[2] !== undefined ? (Number(match[2].slice(1)) - 1) : 0, // month, zero-based
-            match[3] !== undefined ? Number(match[3].slice(1)) : 1) // date
-        }
-
-        if (match[4] !== undefined) {
-          dateObj.setHours(Number(match[4]), // hours
-            match[5] !== undefined ? Number(match[5].slice(1)) : 0, // minutes
-            match[6] !== undefined ? Number(match[6].slice(1)) : 0) // seconds
+        if (formattedMatch[4] !== undefined) {
+          dateObj.setHours(Number(formattedMatch[4]), // hours
+            formattedMatch[5] !== undefined ? Number(formattedMatch[5].slice(1)) : 0, // minutes
+            formattedMatch[6] !== undefined ? Number(formattedMatch[6].slice(1)) : 0) // seconds
         }
 
         if (resetMs) {
@@ -1359,21 +1393,58 @@ self.list = async (req, res) => {
         }
 
         // Calculate timezone differences
-        return new Date(dateObj.getTime() - offset)
-      } else {
+        return new Date(dateObj.getTime() - timezoneOffset)
+      } else if (/^\d+$/.test(date)) {
+        // Unix timestamps (always assume seconds resolution)
+        return new Date(parseInt(date) * 1000)
+      }
+      return null
+    }
+
+    const parseRelativeDuration = (operator, duration, resetMs, inverse = false) => {
+      let milliseconds = parseDuration(duration)
+      if (isNaN(milliseconds) || typeof milliseconds !== 'number') {
         return null
       }
+
+      let from = operator === '<'
+      if (inverse) {
+        // Intended for "expiry" column, as it essentially has to do the opposite
+        from = !from
+        milliseconds = -milliseconds
+      }
+
+      const dateObj = new Date(Date.now() + timezoneOffset - milliseconds)
+      if (resetMs) {
+        dateObj.setMilliseconds(0)
+      }
+
+      const range = { from: null, to: null }
+      const offsetDateObj = new Date(dateObj.getTime() - timezoneOffset)
+      if (from) {
+        range.from = Math.floor(offsetDateObj / 1000)
+      } else {
+        range.to = Math.ceil(offsetDateObj / 1000)
+      }
+      return range
     }
 
     // Parse dates to timestamps
     for (const range of ranges) {
       if (filterObj.queries[range]) {
         if (filterObj.queries[range].from) {
-          const parsed = parseDate(filterObj.queries[range].from, minoffset, true)
-          filterObj.queries[range].from = parsed ? Math.floor(parsed / 1000) : null
+          const relativeMatch = filterObj.queries[range].from.match(/^(<|>)(.*)$/)
+          if (relativeMatch && relativeMatch[2]) {
+            // Human-readable relative duration
+            filterObj.queries[range] = parseRelativeDuration(relativeMatch[1], relativeMatch[2], true, (range === 'expiry'))
+            continue
+          } else {
+            const parsed = parseDate(filterObj.queries[range].from, true)
+            filterObj.queries[range].from = parsed ? Math.floor(parsed / 1000) : null
+          }
         }
         if (filterObj.queries[range].to) {
-          const parsed = parseDate(filterObj.queries[range].to, minoffset, true)
+          const parsed = parseDate(filterObj.queries[range].to, true)
           filterObj.queries[range].to = parsed ? Math.ceil(parsed / 1000) : null
         }
       }
@@ -1448,7 +1519,7 @@ self.list = async (req, res) => {
 
         sortObj.parsed.push({
           column,
-          order: (tmp[1] && /^d/.test(tmp[1])) ? 'desc' : 'asc',
+          order: (tmp[1] && /^d/i.test(tmp[1])) ? 'desc' : 'asc',
           clause: sortObj.nullsLast.includes(column) ? 'nulls last' : '',
           cast: sortObj.casts[column] || null
         })
@@ -1463,33 +1534,50 @@ self.list = async (req, res) => {
       delete filterObj.queries.sort
     }
 
-    // Parse is keys
-    let isKeys = 0
-    let isLast
+    // Parse type-is keys
     if (filterObj.queries.is || filterObj.queries.exclude.is) {
-      for (const type of filterObj.typeIs) {
-        const inQuery = filterObj.queries.is && filterObj.queries.is.includes(type)
-        const inExclude = filterObj.queries.exclude.is && filterObj.queries.exclude.is.includes(type)
+      const types = []
 
-        // Prioritize exclude keys when both types found
-        if (inQuery || inExclude) {
-          filterObj.flags[`is${type}`] = inExclude ? false : inQuery
-          if (isLast !== undefined && isLast !== filterObj.flags[`is${type}`]) {
-            throw new ClientError('Cannot mix inclusion and exclusion type-is keys.')
-          }
-          isKeys++
-          isLast = filterObj.flags[`is${type}`]
+      if (filterObj.queries.is) {
+        filterObj.queries.is = filterObj.queries.is.map(type => type.toLowerCase())
+        types.push(...filterObj.queries.is)
+      }
+      if (filterObj.queries.exclude.is) {
+        filterObj.queries.exclude.is = filterObj.queries.exclude.is.map(type => type.toLowerCase())
+        types.push(...filterObj.queries.exclude.is)
+      }
+
+      let isKeys = 0
+      let isLast
+
+      for (const type of types) {
+        if (!typeIsKeys.includes(type)) {
+          throw new ClientError(`Found invalid type-is key: ${type}.`)
         }
+
+        if (filterObj.queries.is && filterObj.queries.is.includes(type)) {
+          filterObj.flags[`is${type}`] = true
+        } else {
+          filterObj.flags[`is${type}`] = false
+        }
+
+        isKeys++
+
+        if (isLast === undefined) {
+          isLast = filterObj.flags[`is${type}`]
+        } else if (filterObj.flags[`is${type}`] !== isLast) {
+          throw new ClientError('Cannot mix inclusion and exclusion type-is keys.')
+        }
+      }
+
+      // Regular user threshold check
+      if (!ismoderator && isKeys > MAX_IS_KEYS) {
+        throw new ClientError(`Users are only allowed to use ${MAX_IS_KEYS} type-is key${MAX_IS_KEYS === 1 ? '' : 's'} at a time.`)
       }
 
       // Delete keys to avoid unexpected behavior
       delete filterObj.queries.is
       delete filterObj.queries.exclude.is
-    }
-
-    // Regular user threshold check
-    if (!ismoderator && isKeys > MAX_IS_KEYS) {
-      throw new ClientError(`Users are only allowed to use ${MAX_IS_KEYS} type-is key${MAX_IS_KEYS === 1 ? '' : 's'} at a time.`)
     }
   }
 
@@ -1597,7 +1685,7 @@ self.list = async (req, res) => {
 
     // Then, refine using type-is flags
     this.andWhere(function () {
-      for (const type of filterObj.typeIs) {
+      for (const type of typeIsKeys) {
         let func
         let operator
         if (filterObj.flags[`is${type}`] === true) {
@@ -1609,10 +1697,27 @@ self.list = async (req, res) => {
         }
 
         if (func) {
-          for (const pattern of utils[`${type}Exts`].map(ext => `%${ext}`)) {
+          for (const pattern of filterObj.typeIs[type].map(ext => `%${ext}`)) {
             this[func]('name', operator, pattern)
           }
         }
+      }
+    })
+
+    // Then, refine using 'type' keys
+    this.andWhere(function () {
+      if (filterObj.queries.exclude.type) {
+        this.whereNotIn('type', filterObj.queries.exclude.type)
+      } else if (filterObj.queries.type) {
+        this.orWhereIn('type', filterObj.queries.type)
+      }
+      // ...
+      if ((filterObj.queries.exclude.type && filterObj.flags.typeNull !== false) ||
+          (filterObj.queries.type && filterObj.flags.typeNull) ||
+          (!filterObj.queries.exclude.type && !filterObj.queries.type && filterObj.flags.typeNull)) {
+        this.orWhereNull('type')
+      } else if (filterObj.flags.typeNull === false) {
+        this.whereNotNull('type')
       }
     })
 

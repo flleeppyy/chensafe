@@ -105,6 +105,25 @@ module.exports = {
   cookiePolicy: false,
 
   /*
+    Additional routes that come with their own frontend pages logic (in routes/routeName.js).
+    These routes will always be enabled by default, even if the option below is missing,
+    so they need to be explicitly set to false to disable.
+
+    NOTE: Some frontend scripts in dashboard, etc., will always assume that they are all enabled,
+    so they may end up with dead links if disabled (i.e. file info button in dashboard),
+    but otherwise their other own main functions should remain working.
+
+    In short, this is mainly intended for those who know what they are doing,
+    and are willing to modify the scripts themselves when required.
+  */
+  routes: {
+    album: true,
+    file: true,
+    nojs: true,
+    player: true
+  },
+
+  /*
     This can be either 'blacklist' or 'whitelist', which should be self-explanatory.
     When this is set to neither, this will fallback to 'blacklist'.
   */
@@ -567,7 +586,10 @@ module.exports = {
       video: true,
       // Placeholder defaults to 'public/images/unavailable.png'.
       placeholder: null,
-      size: 200
+      size: 200,
+      // https://github.com/fluent-ffmpeg/node-fluent-ffmpeg/tree/v2.1.2#screenshotsoptions-dirname-generate-thumbnails
+      // Only accepts a single value. Defaults to 20%.
+      videoTimemark: '20%'
     },
 
     /*
@@ -661,7 +683,7 @@ module.exports = {
       If more than one are provided, it will use the first one from left to right, but it will NOT
       attempt to use the next methods even if the selected one fails (meaning there's no fallback mechanism).
       Consult https://api.cloudflare.com/#getting-started-requests for differences.
-      API token configuration example: https://github.com/BobbyWibowo/chensafe/pull/216#issue-440389284.
+      API token configuration example: https://github.com/BobbyWibowo/lolisafe/pull/216#issue-440389284.
       After everything is ready, you can then set "purgeCache" to true.
     */
     zoneId: '',

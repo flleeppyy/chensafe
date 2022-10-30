@@ -3,7 +3,7 @@ const routes = new Router()
 const path = require('path')
 const errors = require('./../controllers/errorsController')
 const utils = require('./../controllers/utilsController')
-const config = require('./../config')
+const config = require('./../controllers/utils/ConfigManager')
 
 routes.get('/a/:identifier', async (req, res) => {
   const identifier = req.path_parameters && req.path_parameters.identifier
@@ -47,7 +47,7 @@ routes.get('/a/:identifier', async (req, res) => {
   }
 
   const files = await utils.db.table('files')
-    .select('name', 'size')
+    .select('name', 'size', 'timestamp')
     .where('albumid', album.id)
     .orderBy('id', 'desc')
 

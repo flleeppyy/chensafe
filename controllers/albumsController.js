@@ -1,14 +1,17 @@
+const contentDisposition = require('content-disposition')
 const EventEmitter = require('events')
-const fs = require('fs')
+const fsPromises = require('fs/promises')
+const jetpack = require('fs-jetpack')
 const path = require('path')
 const randomstring = require('randomstring')
 const Zip = require('jszip')
 const paths = require('./pathsController')
 const perms = require('./permissionController')
 const utils = require('./utilsController')
+const ServeStatic = require('./handlers/ServeStatic')
 const ClientError = require('./utils/ClientError')
 const ServerError = require('./utils/ServerError')
-const config = require('./../config')
+const config = require('./utils/ConfigManager')
 const logger = require('./../logger')
 
 const self = {
@@ -22,7 +25,7 @@ const self = {
 
 /** Preferences */
 
-const homeDomain = utils.conf.homeDomain || utils.conf.domain
+const homeDomain = config.homeDomain || config.domain
 
 const albumsPerPage = config.dashboard
   ? Math.max(Math.min(config.dashboard.albumsPerPage || 0, 100), 1)
@@ -30,7 +33,7 @@ const albumsPerPage = config.dashboard
 
 const zipMaxTotalSize = parseInt(config.cloudflare.zipMaxTotalSize)
 const zipMaxTotalSizeBytes = zipMaxTotalSize * 1e6
-const zipOptions = config.uploads.jsZipOptions
+const zipOptions = config.uploads.jsZipOptions || {}
 
 // Force 'type' option to 'nodebuffer'
 zipOptions.type = 'nodebuffer'
@@ -38,8 +41,7 @@ zipOptions.type = 'nodebuffer'
 // Apply fallbacks for missing config values
 if (zipOptions.streamFiles === undefined) zipOptions.streamFiles = true
 if (zipOptions.compression === undefined) zipOptions.compression = 'DEFLATE'
-if (zipOptions.compressionOptions === undefined) zipOptions.compressionOptions = {}
-if (zipOptions.compressionOptions.level === undefined) zipOptions.compressionOptions.level = 1
+if (zipOptions.compressionOptions === undefined) zipOptions.compressionOptions = { level: 1 }
 
 self.zipEmitters = new Map()
 
@@ -50,6 +52,9 @@ class ZipEmitter extends EventEmitter {
     this.once('done', () => self.zipEmitters.delete(this.identifier))
   }
 }
+
+// ServeStatic instance to handle downloading of album ZIP archives
+const serveAlbumZipInstance = new ServeStatic(paths.zips)
 
 self.getUniqueAlbumIdentifier = async res => {
   for (let i = 0; i < utils.idMaxTries; i++) {
@@ -73,6 +78,12 @@ self.getUniqueAlbumIdentifier = async res => {
       continue
     }
 
+    /*
+    if (utils.devmode) {
+      logger.debug(`albums.onHold: ${utils.inspect(self.onHold)}`)
+    }
+    */
+
     // Unhold identifier once the Response has been sent
     if (res) {
       // Keep in an array for future-proofing
@@ -95,7 +106,12 @@ self.unholdAlbumIdentifiers = res => {
 
   for (const identifier of res.locals.identifiers) {
     self.onHold.delete(identifier)
-    logger.debug(`Unheld identifier ${identifier}.`)
+
+    /*
+    if (utils.devmode) {
+      logger.debug(`albums.onHold: ${utils.inspect(self.onHold)} -> ${utils.inspect(identifier)}`)
+    }
+    */
   }
 
   delete res.locals.identifiers
@@ -171,20 +187,16 @@ self.list = async (req, res) => {
 
     // Map by IDs
     albumids[album.id] = album
-  }
 
-  const getAlbumZipSize = async album => {
-    if (!album.zipGeneratedAt) return
-    try {
+    // Get ZIP size
+    if (album.zipGeneratedAt) {
       const filePath = path.join(paths.zips, `${album.identifier}.zip`)
-      const stats = await paths.stat(filePath)
-      albumids[album.id].zipSize = stats.size
-    } catch (error) {
-      if (error.code !== 'ENOENT') logger.error(error)
+      const stats = await jetpack.inspectAsync(filePath)
+      if (stats) {
+        album.zipSize = stats.size
+      }
     }
   }
-
-  await Promise.all(result.albums.map(album => getAlbumZipSize(album)))
 
   const uploads = await utils.db.table('files')
     .whereIn('albumid', Object.keys(albumids))
@@ -341,14 +353,7 @@ self.disable = async (req, res) => {
   utils.deleteStoredAlbumRenders([id])
   utils.invalidateStatsCache('albums')
 
-  try {
-    await paths.unlink(path.join(paths.zips, `${album.identifier}.zip`))
-  } catch (error) {
-    // Re-throw non-ENOENT error
-    if (error.code !== 'ENOENT') {
-      throw error
-    }
-  }
+  await jetpack.removeAsync(path.join(paths.zips, `${album.identifier}.zip`))
 
   return res.json({ success: true })
 }
@@ -389,7 +394,7 @@ self.edit = async (req, res) => {
     throw new ClientError('Could not get album with the specified ID.')
   }
 
-  const albumNewState = (ismoderator && typeof req.body.enabled !== 'undefined')
+  const albumNewState = (ismoderator && req.body.enabled !== undefined)
     ? Boolean(req.body.enabled)
     : null
 
@@ -436,16 +441,10 @@ self.edit = async (req, res) => {
   utils.invalidateStatsCache('albums')
 
   if (req.body.requestLink) {
-    // Rename zip archive of the album if it exists
-    try {
-      const oldZip = path.join(paths.zips, `${album.identifier}.zip`)
-      const newZip = path.join(paths.zips, `${update.identifier}.zip`)
-      await paths.rename(oldZip, newZip)
-    } catch (error) {
-      // Re-throw non-ENOENT error
-      if (error.code !== 'ENOENT') {
-        throw error
-      }
+    // Rename album ZIP if it exists
+    const zipFullPath = path.join(paths.zips, `${album.identifier}.zip`)
+    if (await jetpack.existsAsync(zipFullPath) === 'file') {
+      await jetpack.renameAsync(zipFullPath, `${update.identifier}.zip`)
     }
 
     return res.json({
@@ -492,14 +491,14 @@ self.get = async (req, res) => {
 
   for (const file of files) {
     if (req.locals.upstreamCompat) {
-      file.url = `${utils.conf.domain}/${file.name}`
+      file.url = `${config.domain}/${file.name}`
     } else {
-      file.file = `${utils.conf.domain}/${file.name}`
+      file.file = `${config.domain}/${file.name}`
     }
 
     const extname = utils.extname(file.name)
     if (utils.mayGenerateThumb(extname)) {
-      file.thumb = `${utils.conf.domain}/thumbs/${file.name.slice(0, -extname.length)}.png`
+      file.thumb = `${config.domain}/thumbs/${file.name.slice(0, -extname.length)}.png`
       if (req.locals.upstreamCompat) {
         file.thumbSquare = file.thumb
       }
@@ -581,12 +580,14 @@ self.generateZip = async (req, res) => {
     return res.redirect(`${album.identifier}?v=${album.editedAt}`)
   }
 
+  // Downloading existing album ZIP archive if still valid
   if (album.zipGeneratedAt > album.editedAt) {
     try {
       const filePath = path.join(paths.zips, `${identifier}.zip`)
-      await paths.access(filePath)
-      await res.download(filePath, `${album.name}.zip`)
-      return
+      const stat = await fsPromises.stat(filePath)
+      return serveAlbumZipInstance.handle(req, res, filePath, stat, (req, res) => {
+        res.header('Content-Disposition', contentDisposition(`${album.name}.zip`, { type: 'inline' }))
+      })
     } catch (error) {
       // Re-throw non-ENOENT error
       if (error.code !== 'ENOENT') {
@@ -595,30 +596,35 @@ self.generateZip = async (req, res) => {
     }
   }
 
+  // If EventEmitter already exists for this album ZIP generation, wait for it
   if (self.zipEmitters.has(identifier)) {
     return new Promise((resolve, reject) => {
       logger.log(`Waiting previous zip task for album: ${identifier}.`)
-      self.zipEmitters.get(identifier).once('done', (filePath, fileName, clientErr) => {
-        if (filePath && fileName) {
-          resolve({ filePath, fileName })
-        } else if (clientErr) {
-          reject(clientErr)
+      self.zipEmitters.get(identifier).once('done', (result, clientErr) => {
+        if (clientErr || !result) {
+          return reject(clientErr || new ServerError())
         }
+        return resolve(result)
       })
-    }).then(obj => {
-      return res.download(obj.filePath, obj.fileName)
-    })
+    }).then(async result =>
+      serveAlbumZipInstance.handle(req, res, result.path, result.stat, (req, res) => {
+        res.header('Content-Disposition', contentDisposition(result.name, { type: 'inline' }))
+      })
+    )
   }
 
+  // Create EventEmitter for this album ZIP generation
   self.zipEmitters.set(identifier, new ZipEmitter(identifier))
 
   logger.log(`Starting zip task for album: ${identifier}.`)
 
   const files = await utils.db.table('files')
-    .select('name', 'size')
+    .select('name', 'size', 'timestamp')
     .where('albumid', album.id)
   if (files.length === 0) {
     logger.log(`Finished zip task for album: ${identifier} (no files).`)
+    // Remove album ZIP if it exists
+    await jetpack.removeAsync(path.join(paths.zips, `${identifier}.zip`))
     const clientErr = new ClientError('There are no files in the album.', { statusCode: 200 })
     self.zipEmitters.get(identifier).emit('done', null, null, clientErr)
     throw clientErr
@@ -638,16 +644,18 @@ self.generateZip = async (req, res) => {
   const archive = new Zip()
 
   try {
-    // Since we are adding all files concurrently,
-    // their order in the ZIP file may not be in alphabetical order.
-    // However, ZIP viewers in general should sort the files themselves.
-    await Promise.all(files.map(async file => {
-      const data = await paths.readFile(path.join(paths.uploads, file.name))
-      archive.file(file.name, data)
-    }))
+    for (const file of files) {
+      const fullPath = path.join(paths.uploads, file.name)
+      archive.file(file.name, jetpack.createReadStream(fullPath), {
+        // Use file's upload timestamp as file's modified time in the ZIP archive.
+        // Timezone information does not seem to persist,
+        // so the displayed modified time will likely always be in UTC+0.
+        date: new Date(file.timestamp * 1000)
+      })
+    }
     await new Promise((resolve, reject) => {
       archive.generateNodeStream(zipOptions)
-        .pipe(fs.createWriteStream(zipPath))
+        .pipe(jetpack.createWriteStream(zipPath))
         .on('error', error => reject(error))
         .on('finish', () => resolve())
     })
@@ -663,11 +671,19 @@ self.generateZip = async (req, res) => {
     .update('zipGeneratedAt', Math.floor(Date.now() / 1000))
   utils.invalidateStatsCache('albums')
 
-  const filePath = path.join(paths.zips, `${identifier}.zip`)
-  const fileName = `${album.name}.zip`
+  const result = {
+    path: path.join(paths.zips, `${identifier}.zip`),
+    name: `${album.name}.zip`
+  }
+  result.stat = await fsPromises.stat(result.path)
 
-  self.zipEmitters.get(identifier).emit('done', filePath, fileName)
-  return res.download(filePath, fileName)
+  // Notify all other awaiting Requests, if any
+  self.zipEmitters.get(identifier).emit('done', result)
+
+  // Conclude this Request by streaming the album ZIP archive
+  return serveAlbumZipInstance.handle(req, res, result.path, result.stat, (req, res) => {
+    res.header('Content-Disposition', contentDisposition(result.name, { type: 'inline' }))
+  })
 }
 
 self.addFiles = async (req, res) => {

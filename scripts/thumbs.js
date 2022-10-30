@@ -1,20 +1,24 @@
+const jetpack = require('fs-jetpack')
 const path = require('path')
 const paths = require('./../controllers/pathsController')
 const utils = require('./../controllers/utilsController')
+const Constants = require('./../controllers/utils/Constants')
 
 const self = {
   mode: null,
   mayGenerateThumb: extname => {
-    return ([1, 3].includes(self.mode) && utils.imageExts.includes(extname)) ||
-    ([2, 3].includes(self.mode) && utils.videoExts.includes(extname))
+    return ([1, 3].includes(self.mode) && Constants.IMAGE_EXTS.includes(extname)) ||
+    ([2, 3].includes(self.mode) && Constants.VIDEO_EXTS.includes(extname))
   },
   getFiles: async directory => {
-    const names = await paths.readdir(directory)
+    const names = await jetpack.listAsync(directory)
     const files = []
-    for (const name of names) {
-      const lstat = await paths.lstat(path.join(directory, name))
-      if (lstat.isFile() && !name.startsWith('.')) {
-        files.push(name)
+    if (Array.isArray(names) && names.length) {
+      for (const name of names) {
+        const exists = await jetpack.existsAsync(path.join(directory, name))
+        if (exists === 'file' && !name.startsWith('.')) {
+          files.push(name)
+        }
       }
     }
     return files

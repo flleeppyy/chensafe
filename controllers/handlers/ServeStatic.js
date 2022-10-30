@@ -19,10 +19,10 @@
 
 const contentDisposition = require('content-disposition')
 const etag = require('etag')
-const fs = require('fs')
+const fsPromises = require('fs/promises')
+const jetpack = require('fs-jetpack')
 const SimpleDataStore = require('./../utils/SimpleDataStore')
 const errors = require('./../errorsController')
-const paths = require('./../pathsController')
 const utils = require('./../utilsController')
 const serveUtils = require('./../utils/serveUtils')
 const logger = require('./../../logger')
@@ -83,7 +83,7 @@ class ServeStatic {
       }
 
       if (this.contentTypesMaps.size) {
-        logger.debug(`Inititated Content-Type overrides map for ${this.contentTypesMaps.size} extension(s).`)
+        logger.debug(`Initiated Content-Type overrides map for ${this.contentTypesMaps.size} extension(s).`)
       } else {
         this.contentTypesMaps = undefined
       }
@@ -98,43 +98,26 @@ class ServeStatic {
         }
       )
 
-      logger.debug('Inititated SimpleDataStore for Content-Disposition: ' +
+      logger.debug('Initiated SimpleDataStore for Content-Disposition: ' +
          `{ limit: ${this.contentDispositionStore.limit}, strategy: "${this.contentDispositionStore.strategy}" }`)
     }
 
     this.#options = options
   }
 
-  async #get (fullPath) {
-    const stat = await paths.stat(fullPath)
-
-    if (stat.isDirectory()) return
-
-    return stat
-  }
-
-  async #handler (req, res) {
-    if (this.#options.ignorePatterns && this.#options.ignorePatterns.some(pattern => req.path.startsWith(pattern))) {
-      return errors.handleNotFound(req, res)
-    }
-
-    const fullPath = this.directory + req.path
-    const stat = await this.#get(fullPath)
-      .catch(error => {
-        // Only re-throw errors if not due to missing files
-        if (error.code !== 'ENOENT') {
-          throw error
-        }
-      })
-    if (stat === undefined) {
-      return errors.handleNotFound(req, res)
-    }
-
+  // Can be programatically called from within in-progress Requests
+  // Essentially stream-based alternative for Response.download() or Response.send()
+  async #handle (req, res, fullPath, stat, setHeaders) {
     // Set Content-Type
-    res.type(req.path)
+    res.type(fullPath)
 
     // Set header fields
     await this.#setHeaders(req, res, stat)
+
+    // Per-request setHeaders, if required
+    if (typeof setHeaders === 'function') {
+      setHeaders(req, res)
+    }
 
     // Conditional GET support
     if (serveUtils.assertConditionalGET(req, res)) {
@@ -165,6 +148,35 @@ class ServeStatic {
     }
 
     return this.#stream(req, res, fullPath, result)
+  }
+
+  async #get (fullPath) {
+    const stat = await fsPromises.stat(fullPath)
+
+    if (stat.isDirectory()) return
+
+    return stat
+  }
+
+  // As route handler function for HyperExpress.any()
+  async #handler (req, res) {
+    if (this.#options.ignorePatterns && this.#options.ignorePatterns.some(pattern => req.path.startsWith(pattern))) {
+      return errors.handleNotFound(req, res)
+    }
+
+    const fullPath = this.directory + req.path
+    const stat = await this.#get(fullPath)
+      .catch(error => {
+        // Only re-throw errors if not due to missing files
+        if (error.code !== 'ENOENT') {
+          throw error
+        }
+      })
+    if (stat === undefined) {
+      return errors.handleNotFound(req, res)
+    }
+
+    return this.#handle(req, res, fullPath, stat)
   }
 
   async #setContentDisposition (req, res) {
@@ -237,7 +249,7 @@ class ServeStatic {
   }
 
   async #stream (req, res, fullPath, result) {
-    const readStream = fs.createReadStream(fullPath, result.options)
+    const readStream = jetpack.createReadStream(fullPath, result.options)
 
     readStream.on('error', error => {
       readStream.destroy()
@@ -246,6 +258,10 @@ class ServeStatic {
 
     // 2nd param will be set as Content-Length header (must be number)
     return res.stream(readStream, result.length)
+  }
+
+  get handle () {
+    return this.#handle.bind(this)
   }
 
   get handler () {

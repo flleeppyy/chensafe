@@ -2,7 +2,7 @@ const path = require('path')
 const paths = require('./pathsController')
 const ClientError = require('./utils/ClientError')
 const ServerError = require('./utils/ServerError')
-const config = require('./../config')
+const config = require('./utils/ConfigManager')
 const logger = require('./../logger')
 
 const self = {

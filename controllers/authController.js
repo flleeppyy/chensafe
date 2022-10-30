@@ -1,4 +1,5 @@
 const bcrypt = require('bcrypt')
+const jetpack = require('fs-jetpack')
 const path = require('path')
 const randomstring = require('randomstring')
 const paths = require('./pathsController')
@@ -6,7 +7,7 @@ const perms = require('./permissionController')
 const tokens = require('./tokenController')
 const utils = require('./utilsController')
 const ClientError = require('./utils/ClientError')
-const config = require('./../config')
+const config = require('./utils/ConfigManager')
 
 // Don't forget to update min/max length of text inputs in auth.njk
 // when changing these values.
@@ -74,14 +75,14 @@ self.assertUser = async (token, fields, ip) => {
   }
 }
 
-self.requireUser = (req, res, next, fields) => {
+self.requireUser = (req, res, next, options = {}) => {
   // Throws when token is missing, thus use only for users-only routes
-  const token = req.headers.token
-  if (token === undefined) {
+  const token = options.token || req.headers.token
+  if (!token) {
     return next(new ClientError('No token provided.', { statusCode: 403 }))
   }
 
-  self.assertUser(token, fields, req.ip)
+  self.assertUser(token, options.fields, req.ip)
     .then(user => {
       // Add user data to Request.locals.user
       req.locals.user = user
@@ -90,21 +91,26 @@ self.requireUser = (req, res, next, fields) => {
     .catch(next)
 }
 
-self.optionalUser = (req, res, next, fields) => {
+self.optionalUser = (req, res, next, options = {}) => {
   // Throws when token if missing only when private is set to true in config,
   // thus use for routes that can handle no auth requests
-  const token = req.headers.token
-  if (token) {
-    self.assertUser(token, fields, req.ip)
-      .then(user => {
-        // Add user data to Request.locals.user
-        req.locals.user = user
-        return next()
-      })
-      .catch(next)
-  } else if (config.private === true) {
-    return next(new ClientError('No token provided.', { statusCode: 403 }))
+  const token = options.token || req.headers.token
+  if (!token) {
+    if (config.private === true) {
+      return next(new ClientError('No token provided.', { statusCode: 403 }))
+    } else {
+      // Simply bypass this middleware otherwise
+      return next()
+    }
   }
+
+  self.assertUser(token, options.fields, req.ip)
+    .then(user => {
+      // Add user data to Request.locals.user
+      req.locals.user = user
+      return next()
+    })
+    .catch(next)
 }
 
 self.verify = async (req, res) => {
@@ -389,6 +395,10 @@ self.editUser = async (req, res) => {
     update.password = await bcrypt.hash(password, saltRounds)
   }
 
+  if (!Object.keys(update).length) {
+    throw new ClientError('You are not editing any properties of this user.')
+  }
+
   await utils.db.table('users')
     .where('id', id)
     .update(update)
@@ -467,15 +477,10 @@ self.deleteUser = async (req, res) => {
       .del()
     utils.deleteStoredAlbumRenders(albumids)
 
-    // Unlink their archives
-    await Promise.all(albums.map(async album => {
-      try {
-        await paths.unlink(path.join(paths.zips, `${album.identifier}.zip`))
-      } catch (error) {
-        // Re-throw non-ENOENT error
-        if (error.code !== 'ENOENT') throw error
-      }
-    }))
+    // Unlink their album ZIP archives
+    await Promise.all(albums.map(async album =>
+      jetpack.removeAsync(path.join(paths.zips, `${album.identifier}.zip`))
+    ))
   }
 
   await utils.db.table('users')

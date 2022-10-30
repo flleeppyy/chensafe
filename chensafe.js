@@ -9,11 +9,22 @@ process.on('unhandledRejection', error => {
   logger.error(error, { prefix: 'Unhandled Rejection (Promise): ' })
 })
 
+// Change working directory into the directory that contains chensafe.js
+try {
+  const { chdir, cwd } = require('process')
+  if (cwd() !== __dirname) {
+    chdir(__dirname)
+    logger.log(`Changed working directory to: ${__dirname}`)
+  }
+} catch (error) {
+  logger.error(error)
+  process.exit(1)
+}
+
 // Libraries
 const fs = require('fs')
 const helmet = require('helmet')
 const HyperExpress = require('hyper-express')
-const NodeClam = require('clamscan')
 
 // Check required config files
 const configFiles = ['config.js', 'views/_globals.njk']
@@ -27,9 +38,8 @@ for (const _file of configFiles) {
   }
 }
 
-// Config files
-const config = require('./config')
-const versions = require('./src/versions')
+// ConfigManager
+const config = require('./controllers/utils/ConfigManager')
 
 // chensafe
 logger.log('Starting chensafe\u2026')
@@ -43,6 +53,7 @@ paths.initSync()
 const utils = require('./controllers/utilsController')
 
 // Middlewares
+const DebugLogging = require('./controllers/middlewares/DebugLogging')
 const ExpressCompat = require('./controllers/middlewares/ExpressCompat')
 const NunjucksRenderer = require('./controllers/middlewares/NunjucksRenderer')
 const RateLimiter = require('./controllers/middlewares/RateLimiter')
@@ -52,12 +63,21 @@ const ServeStaticQuick = require('./controllers/middlewares/ServeStaticQuick')
 // Handlers
 const ServeStatic = require('./controllers/handlers/ServeStatic')
 
+// Modules
+const ScannerManager = require('./controllers/utils/ScannerManager')
+
 // Routes
 const album = require('./routes/album')
 const api = require('./routes/api')
 const file = require('./routes/file')
 const nojs = require('./routes/nojs')
 const player = require('./routes/player')
+
+// Incoming requests logging (development mode)
+if (utils.devmode) {
+  const DebugLoggingInstance = new DebugLogging()
+  safe.use(DebugLoggingInstance.middleware)
+}
 
 // Express-compat
 const expressCompatInstance = new ExpressCompat()
@@ -191,32 +211,41 @@ if (config.cacheControl) {
   })
 }
 
-// Init ServeStaticQuick middlewares for static assets
+// Init serve static middlewares for static assets
+const ServeStaticClass = config.useServeStaticQuick
+  ? ServeStaticQuick
+  : ServeLiveDirectory
+
 // Static assets in /dist directory
-const serveStaticQuickDistInstance = new ServeStaticQuick(paths.dist, {
+const serveStaticDistInstance = new ServeStaticClass(paths.dist, {
   setHeaders: setHeadersForStaticAssets
 })
-safe.use(serveStaticQuickDistInstance.middleware)
+safe.use(serveStaticDistInstance.middleware)
+
 // Static assets in /public directory
-const serveStaticQuickPublicInstance = new ServeStaticQuick(paths.public, {
+const serveStaticPublicInstance = new ServeStaticClass(paths.public, {
   setHeaders: setHeadersForStaticAssets
 })
-safe.use(serveStaticQuickPublicInstance.middleware)
+safe.use(serveStaticPublicInstance.middleware)
 
 // Routes
-safe.use(album)
-safe.use(file)
-safe.use(nojs)
-safe.use(player)
+config.routes = typeof config.routes === 'object'
+  ? config.routes
+  : {}
+
+// Only disable these routes if they are explicitly set to false in config file
+if (config.routes.album !== false) safe.use(album)
+if (config.routes.file !== false) safe.use(file)
+if (config.routes.nojs !== false) safe.use(nojs)
+if (config.routes.player !== false) safe.use(player)
+
+// API routes
 safe.use('/api', api)
 
 ;(async () => {
   try {
     // Init database
     await require('./controllers/utils/initDatabase')(utils.db)
-
-    // Purge any leftover in chunks directory, do not wait
-    paths.purgeChunks()
 
     if (!Array.isArray(config.pages) || !config.pages.length) {
       logger.error('Config file does not have any frontend pages enabled')
@@ -226,6 +255,10 @@ safe.use('/api', api)
     // Re-map version strings if cache control is enabled (safe.fiery.me)
     utils.versionStrings = {}
     if (config.cacheControl) {
+      const versions = require('./src/versions')
+      if (versions['1'] && utils.devmode) {
+        versions['1'] = String(Math.ceil(Date.now() / 1000))
+      }
       for (const type in versions) {
         utils.versionStrings[type] = `?_=${versions[type]}`
       }
@@ -253,9 +286,9 @@ safe.use('/api', api)
     safe.use((req, res, next) => {
       if (req.method === 'GET' || req.method === 'HEAD') {
         const page = req.path === '/' ? 'home' : req.path.substring(1)
-        const customPage = serveLiveDirectoryCustomPagesInstance.instance.get(`${page}.html`)
+        const customPage = serveLiveDirectoryCustomPagesInstance.get(`${page}.html`)
         if (customPage) {
-          return serveLiveDirectoryCustomPagesInstance.handler(req, res, customPage)
+          return serveLiveDirectoryCustomPagesInstance.handler(req, res, req.path, customPage)
         } else if (config.pages.includes(page)) {
           // These rendered pages are persistently cached during production
           return res.render(page, {
@@ -292,7 +325,7 @@ safe.use('/api', api)
     // Git hash
     if (config.showGitHash) {
       utils.gitHash = await new Promise((resolve, reject) => {
-        require('child_process').exec('git rev-parse HEAD', (error, stdout) => {
+        require('child_process').execFile('git', ['rev-parse', 'HEAD'], (error, stdout) => {
           if (error) return reject(error)
           resolve(stdout.replace(/\n$/, ''))
         })
@@ -300,27 +333,20 @@ safe.use('/api', api)
       logger.log(`Git commit: ${utils.gitHash}`)
     }
 
-    // ClamAV scanner
-    if (config.uploads.scan && config.uploads.scan.enabled) {
-      if (!config.uploads.scan.clamOptions) {
-        logger.error('Missing object config.uploads.scan.clamOptions (check config.sample.js)')
-        process.exit(1)
-      }
-      utils.scan.instance = await new NodeClam().init(config.uploads.scan.clamOptions)
-      utils.scan.version = await utils.scan.instance.getVersion().then(s => s.trim())
-      logger.log(`Connection established with ${utils.scan.version}`)
-    }
-
     // Await all ServeLiveDirectory and ServeStaticQuick instances
     await Promise.all([
-      serveStaticQuickDistInstance.ready(),
-      serveStaticQuickPublicInstance.ready(),
+      serveStaticDistInstance.ready(),
+      serveStaticPublicInstance.ready(),
       serveLiveDirectoryCustomPagesInstance.ready()
     ])
 
+    // Init modules
+    // ClamAV scanner
+    await ScannerManager.init()
+
     // Binds Express to port
-    await safe.listen(utils.conf.port)
-    logger.log(`chensafe started on port ${utils.conf.port}`)
+    await safe.listen(config.port)
+    logger.log(`chensafe started on port ${config.port}`)
 
     // Cache control (safe.fleepy.tv)
     // Purge Cloudflare cache
